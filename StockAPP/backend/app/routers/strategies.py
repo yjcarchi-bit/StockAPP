@@ -29,6 +29,7 @@ def _get_strategy_meta(strategy_name: str) -> dict:
     """
     strategy_map = {
         "etf_rotation": ("strategies.etf_rotation", "ETFRotationStrategy"),
+        "large_cap_low_drawdown": ("strategies.large_cap_low_drawdown", "LargeCapLowDrawdownStrategy"),
         "dual_ma": ("strategies.dual_ma", "DualMAStrategy"),
         "rsi": ("strategies.rsi_strategy", "RSIStrategy"),
         "macd": ("strategies.macd_strategy", "MACDStrategy"),
@@ -75,6 +76,7 @@ def _get_strategy_type(strategy_name: str) -> str:
     """获取策略类型"""
     type_map = {
         "etf_rotation": "动量策略",
+        "large_cap_low_drawdown": "动量策略",
         "dual_ma": "趋势跟踪",
         "rsi": "均值回归",
         "macd": "趋势跟踪",
@@ -88,6 +90,7 @@ def _get_strategy_icon(strategy_name: str) -> str:
     """获取策略图标"""
     icon_map = {
         "etf_rotation": "🔄",
+        "large_cap_low_drawdown": "🛡️",
         "dual_ma": "📈",
         "rsi": "📊",
         "macd": "📉",
@@ -97,7 +100,7 @@ def _get_strategy_icon(strategy_name: str) -> str:
     return icon_map.get(strategy_name, "📊")
 
 
-STRATEGY_NAMES = ["etf_rotation", "dual_ma", "rsi", "macd", "bollinger", "grid"]
+STRATEGY_NAMES = ["etf_rotation", "large_cap_low_drawdown", "dual_ma", "rsi", "macd", "bollinger", "grid"]
 
 
 @router.get("", response_model=List[StrategyListItem])

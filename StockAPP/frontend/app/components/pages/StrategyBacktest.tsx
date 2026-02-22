@@ -11,6 +11,7 @@ import StockSelector from '../backtest/StockSelector';
 import BacktestResults from '../backtest/BacktestResults';
 import { runBacktestAsync } from '../../utils/backtestRunner';
 import type { BacktestResult } from '../../utils/backtestEngine';
+import { usePersistentState } from '../../hooks';
 
 interface Stock {
   code: string;
@@ -34,25 +35,27 @@ function getDefaultStartDate(): string {
   return '2015-01-01';
 }
 
+const DEFAULT_SELECTED_ETFS = etfPool.filter(etf => etf.selected).map(etf => etf.code);
+
+const DEFAULT_BACKTEST_PARAMS = {
+  startDate: getDefaultStartDate(),
+  endDate: getTodayDate(),
+  initialCapital: 100000,
+  benchmark: '510300',
+};
+
 export default function StrategyBacktest() {
-  const [selectedStrategy, setSelectedStrategy] = useState<StrategyType>('etf_rotation');
+  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('backtest_strategy', 'etf_rotation');
   const [isIntroExpanded, setIsIntroExpanded] = useState(true);
-  const [selectedETFs, setSelectedETFs] = useState<string[]>(
-    etfPool.filter(etf => etf.selected).map(etf => etf.code)
-  );
-  const [selectedStocks, setSelectedStocks] = useState<Stock[]>([]);
-  const [backtestParams, setBacktestParams] = useState({
-    startDate: getDefaultStartDate(),
-    endDate: getTodayDate(),
-    initialCapital: 100000,
-    benchmark: '510300',
-  });
-  const [strategyParams, setStrategyParams] = useState<Record<string, any>>({});
+  const [selectedETFs, setSelectedETFs] = usePersistentState<string[]>('backtest_etfs', DEFAULT_SELECTED_ETFS);
+  const [selectedStocks, setSelectedStocks] = usePersistentState<Stock[]>('backtest_stocks', []);
+  const [backtestParams, setBacktestParams] = usePersistentState('backtest_params', DEFAULT_BACKTEST_PARAMS);
+  const [strategyParams, setStrategyParams] = usePersistentState<Record<string, any>>('backtest_strategy_params', {});
   const [isRunning, setIsRunning] = useState(false);
-  const [result, setResult] = useState<BacktestResult | null>(null);
+  const [result, setResult] = usePersistentState<BacktestResult | null>('backtest_result', null);
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = usePersistentState<LogEntry[]>('backtest_logs', []);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const currentStrategy = strategies.find(s => s.id === selectedStrategy)!;

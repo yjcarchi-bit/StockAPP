@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { strategies, etfPool, type StrategyType } from '../../utils/strategyConfig';
 import { runBacktest } from '../../utils/backtestRunner';
 import { Progress } from '../ui/progress';
+import { usePersistentState } from '../../hooks';
 
 interface OptimizationResult {
   params: Record<string, any>;
@@ -16,16 +17,18 @@ interface OptimizationResult {
   maxDrawdown: number;
 }
 
+const DEFAULT_OPTIMIZATION_PARAMS = {
+  startDate: '2021-01-01',
+  endDate: '2024-01-01',
+};
+
 export default function ParameterOptimization() {
-  const [selectedStrategy, setSelectedStrategy] = useState<StrategyType>('dual_ma');
-  const [selectedETF, setSelectedETF] = useState('510300');
-  const [dateRange, setDateRange] = useState({
-    startDate: '2021-01-01',
-    endDate: '2024-01-01',
-  });
-  const [initialCapital, setInitialCapital] = useState(100000);
-  const [optimizationMethod, setOptimizationMethod] = useState<'grid' | 'random'>('grid');
-  const [optimizationTarget, setOptimizationTarget] = useState<'sharpe' | 'return'>('sharpe');
+  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('optimization_strategy', 'dual_ma');
+  const [selectedETF, setSelectedETF] = usePersistentState('optimization_etf', '510300');
+  const [dateRange, setDateRange] = usePersistentState('optimization_date_range', DEFAULT_OPTIMIZATION_PARAMS);
+  const [initialCapital, setInitialCapital] = usePersistentState('optimization_capital', 100000);
+  const [optimizationMethod, setOptimizationMethod] = usePersistentState<'grid' | 'random'>('optimization_method', 'grid');
+  const [optimizationTarget, setOptimizationTarget] = usePersistentState<'sharpe' | 'return'>('optimization_target', 'sharpe');
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<OptimizationResult[]>([]);

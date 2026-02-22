@@ -11,6 +11,54 @@ echo.
 
 cd /d "%~dp0"
 
+:: 单实例检测
+set PID_FILE=%TEMP%\stockapp.pid
+set LOCK_FILE=%TEMP%\stockapp.lock
+
+:: 检查是否已有实例运行
+if exist "%LOCK_FILE%" (
+    echo 检测到 StockAPP 可能已在运行中
+    echo.
+    
+    :: 尝试读取 PID
+    if exist "%PID_FILE%" (
+        set /p OLD_PID=<"%PID_FILE%"
+        
+        :: 检查进程是否存在
+        tasklist /fi "pid eq %OLD_PID%" 2>nul | find "%OLD_PID%" >nul
+        if !errorlevel! equ 0 (
+            echo 运行中的进程 PID: %OLD_PID%
+            echo.
+            echo 如需启动新实例，请先关闭现有实例：
+            echo   taskkill /pid %OLD_PID% /f
+            echo.
+            echo 或直接打开浏览器访问: http://localhost:5173
+            echo.
+            pause
+            exit /b 1
+        ) else (
+            echo 进程 %OLD_PID% 已不存在，清理残留文件...
+            del "%PID_FILE%" >nul 2>&1
+            del "%LOCK_FILE%" >nul 2>&1
+        )
+    ) else (
+        echo 无法获取进程信息，请检查端口占用：
+        echo   netstat -aon ^| findstr :8000
+        echo   netstat -aon ^| findstr :5173
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+:: 创建锁文件和写入 PID
+echo %~1 > "%LOCK_FILE%"
+echo %random%%random% > "%PID_FILE%"
+
+:: 设置退出时清理
+set BACKEND_PID=
+set FRONTEND_PID=
+
 echo 工作目录: %cd%
 echo.
 
@@ -35,7 +83,6 @@ if %errorlevel% equ 0 (
     goto :check_python_version
 )
 
-:: 尝试常见安装路径
 if exist "%LOCALAPPDATA%\Programs\Python\Python3*\python.exe" (
     for /d %%i in ("%LOCALAPPDATA%\Programs\Python\Python3*") do (
         set PYTHON_CMD=%%i\python.exe
@@ -53,7 +100,6 @@ if exist "C:\Python3*\python.exe" (
 goto :install_python
 
 :check_python_version
-:: 检查版本是否 >= 3.8
 for /f "tokens=1,2 delims=." %%a in ("%PYTHON_VERSION%") do (
     set PY_MAJOR=%%a
     set PY_MINOR=%%b
@@ -89,7 +135,6 @@ echo 正在下载 Python 安装程序...
 echo 请在安装时勾选 "Add Python to PATH"
 echo.
 
-:: 使用 winget 安装 (Windows 10/11)
 where winget >nul 2>&1
 if %errorlevel% equ 0 (
     echo 使用 winget 安装 Python...
@@ -101,7 +146,6 @@ if %errorlevel% equ 0 (
     exit /b 0
 )
 
-:: 使用 PowerShell 下载
 set PYTHON_INSTALLER=%TEMP%\python-installer.exe
 powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe' -OutFile '%PYTHON_INSTALLER%'"
 
@@ -145,7 +189,6 @@ if %errorlevel% equ 0 (
     goto :node_found
 )
 
-:: 尝试常见安装路径
 if exist "%ProgramFiles%\nodejs\node.exe" (
     set NODE_CMD=%ProgramFiles%\nodejs\node.exe
     goto :node_found
@@ -189,7 +232,6 @@ goto :exit_script
 echo.
 echo 正在下载 Node.js 安装程序...
 
-:: 使用 winget 安装 (Windows 10/11)
 where winget >nul 2>&1
 if %errorlevel% equ 0 (
     echo 使用 winget 安装 Node.js...
@@ -201,7 +243,6 @@ if %errorlevel% equ 0 (
     exit /b 0
 )
 
-:: 使用 PowerShell 下载
 set NODE_INSTALLER=%TEMP%\node-installer.msi
 powershell -Command "Invoke-WebRequest -Uri 'https://nodejs.org/dist/v20.11.0/node-v20.11.0-x64.msi' -OutFile '%NODE_INSTALLER%'"
 
@@ -233,7 +274,6 @@ exit /b 1
 :: ============================================
 :check_dependencies
 
-:: 检查后端依赖
 echo 检查后端依赖...
 cd /d "%~dp0backend"
 %PYTHON_CMD% -c "import fastapi" >nul 2>&1
@@ -242,7 +282,6 @@ if %errorlevel% neq 0 (
     %PYTHON_CMD% -m pip install -r requirements.txt -q
 )
 
-:: 检查前端依赖
 echo 检查前端依赖...
 cd /d "%~dp0frontend"
 if not exist "node_modules" (
@@ -257,18 +296,15 @@ echo.
 :: 启动服务
 :: ============================================
 
-:: 清理可能占用的端口
 echo 清理端口...
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5173 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-:: 启动后端
 echo 正在启动后端服务...
 cd /d "%~dp0backend"
 start /b "" %PYTHON_CMD% run.py
 
-:: 等待后端启动
 echo 等待后端服务启动...
 set MAX_WAIT=15
 set WAIT_COUNT=0
@@ -286,12 +322,10 @@ if %WAIT_COUNT% lss %MAX_WAIT% (
 echo 警告: 后端服务启动可能较慢，继续启动前端...
 
 :start_frontend
-:: 启动前端
 echo 正在启动前端服务...
 cd /d "%~dp0frontend"
 start /b "" npm run dev
 
-:: 等待前端启动
 echo 等待前端服务启动...
 set WAIT_COUNT=0
 :check_frontend
@@ -308,7 +342,6 @@ if %WAIT_COUNT% lss %MAX_WAIT% (
 echo 警告: 前端服务启动可能较慢，请稍候...
 
 :open_browser
-:: 自动打开浏览器
 echo 正在打开浏览器...
 timeout /t 2 /nobreak >nul
 start http://localhost:5173
@@ -323,20 +356,25 @@ echo   关闭此窗口将停止应用
 echo ==========================================
 echo.
 
-:: 保持窗口打开，等待用户操作
 echo 按任意键停止应用...
 pause >nul
 
-:: 停止进程
+:: 清理
+:cleanup
 echo 正在停止服务...
 taskkill /f /im node.exe >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+
+:: 删除锁文件
+del "%PID_FILE%" >nul 2>&1
+del "%LOCK_FILE%" >nul 2>&1
 
 echo 应用已停止
 timeout /t 2 /nobreak >nul
 exit /b 0
 
 :exit_script
+del "%LOCK_FILE%" >nul 2>&1
 echo 已取消
 pause
 exit /b 1

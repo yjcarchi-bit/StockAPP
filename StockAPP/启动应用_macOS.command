@@ -1,6 +1,7 @@
 #!/bin/bash
 # StockAPP macOS 启动脚本
 # 双击此文件启动应用 (React + FastAPI 版本)
+# 支持单实例模式，防止重复启动
 
 clear
 
@@ -13,6 +14,89 @@ echo ""
 # 切换到脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# PID 文件路径
+PID_FILE="/tmp/stockapp.pid"
+LOCK_FILE="/tmp/stockapp.lock"
+
+# 检查是否已有实例运行
+check_single_instance() {
+    # 尝试获取锁
+    exec 200>"$LOCK_FILE"
+    flock -n 200
+    if [ $? -ne 0 ]; then
+        echo "⚠️  检测到 StockAPP 已在运行中"
+        echo ""
+        
+        # 尝试读取 PID
+        if [ -f "$PID_FILE" ]; then
+            OLD_PID=$(cat "$PID_FILE")
+            if ps -p "$OLD_PID" > /dev/null 2>&1; then
+                echo "运行中的进程 PID: $OLD_PID"
+                echo ""
+                echo "如需启动新实例，请先关闭现有实例："
+                echo "  kill $OLD_PID"
+                echo ""
+                echo "或直接打开浏览器访问: http://localhost:5173"
+            else
+                echo "进程 $OLD_PID 已不存在，清理残留文件..."
+                rm -f "$PID_FILE"
+                return 0
+            fi
+        else
+            echo "无法获取进程信息，请检查端口占用："
+            echo "  lsof -i:8000"
+            echo "  lsof -i:5173"
+        fi
+        
+        read -p "按回车键退出..."
+        exit 1
+    fi
+    
+    return 0
+}
+
+# 写入 PID 文件
+write_pid() {
+    echo $$ > "$PID_FILE"
+}
+
+# 清理函数
+cleanup() {
+    echo ""
+    echo "正在停止服务..."
+    
+    # 停止后端和前端进程
+    if [ ! -z "$BACKEND_PID" ]; then
+        kill $BACKEND_PID 2>/dev/null
+    fi
+    if [ ! -z "$FRONTEND_PID" ]; then
+        kill $FRONTEND_PID 2>/dev/null
+    fi
+    
+    # 清理 PID 文件
+    rm -f "$PID_FILE"
+    
+    # 清理端口
+    lsof -ti:8000 | xargs kill -9 2>/dev/null
+    lsof -ti:5173 | xargs kill -9 2>/dev/null
+    
+    # 释放锁
+    flock -u 200 2>/dev/null
+    rm -f "$LOCK_FILE"
+    
+    echo "服务已停止"
+    exit 0
+}
+
+# 检查单实例
+check_single_instance
+
+# 写入当前 PID
+write_pid
+
+# 设置退出信号处理
+trap cleanup SIGINT SIGTERM EXIT
 
 echo "工作目录: $(pwd)"
 echo ""
@@ -30,7 +114,6 @@ install_homebrew() {
     echo "这可能需要几分钟，请耐心等待..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     
-    # 添加 Homebrew 到 PATH (Apple Silicon)
     if [[ -d "/opt/homebrew" ]]; then
         echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
         eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -42,7 +125,6 @@ PYTHON_CMD=""
 PYTHON_VERSION=""
 
 find_python() {
-    # 尝试 python3
     if command -v python3 &> /dev/null; then
         local ver=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
         local major=$(echo $ver | cut -d. -f1)
@@ -54,7 +136,6 @@ find_python() {
         fi
     fi
     
-    # 尝试 python
     if command -v python &> /dev/null; then
         local ver=$(python --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
         local major=$(echo $ver | cut -d. -f1)
@@ -66,7 +147,6 @@ find_python() {
         fi
     fi
     
-    # 尝试 Homebrew 安装的 Python
     if [ -x "/opt/homebrew/bin/python3" ]; then
         PYTHON_CMD="/opt/homebrew/bin/python3"
         PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
@@ -143,7 +223,6 @@ NODE_CMD=""
 NODE_VERSION=""
 
 find_node() {
-    # 添加常见的 Node.js 路径到 PATH
     local NODE_PATHS=(
         "$HOME/.trae-cn/binaries/node/versions/24.13.1/bin"
         "$HOME/.trae-cn/binaries/node/versions/*/bin"
@@ -161,21 +240,18 @@ find_node() {
         done
     done
     
-    # 尝试加载 shell 配置文件中的 PATH
     if [ -f "$HOME/.zshrc" ]; then
         source "$HOME/.zshrc" 2>/dev/null || true
     elif [ -f "$HOME/.bash_profile" ]; then
         source "$HOME/.bash_profile" 2>/dev/null || true
     fi
     
-    # 尝试 node 命令
     if command -v node &> /dev/null; then
         NODE_CMD="node"
         NODE_VERSION=$(node --version 2>&1 | sed 's/v//')
         return 0
     fi
     
-    # 尝试特定路径
     if [ -x "$HOME/.trae-cn/binaries/node/versions/24.13.1/bin/node" ]; then
         NODE_CMD="$HOME/.trae-cn/binaries/node/versions/24.13.1/bin/node"
         export PATH="$HOME/.trae-cn/binaries/node/versions/24.13.1/bin:$PATH"
@@ -183,7 +259,6 @@ find_node() {
         return 0
     fi
     
-    # Homebrew 路径
     if [ -x "/opt/homebrew/bin/node" ]; then
         NODE_CMD="/opt/homebrew/bin/node"
         NODE_VERSION=$($NODE_CMD --version 2>&1 | sed 's/v//')
@@ -240,10 +315,8 @@ install_node() {
             echo ""
             echo "正在安装 nvm (Node Version Manager)..."
             
-            # 安装 nvm
             curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
             
-            # 加载 nvm
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             
@@ -370,11 +443,5 @@ echo "  关闭此窗口将停止应用"
 echo "=========================================="
 echo ""
 
-# 捕获退出信号
-trap "echo '正在停止服务...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0" SIGINT SIGTERM
-
 # 等待进程
 wait $BACKEND_PID $FRONTEND_PID
-
-echo ""
-read -p "按回车键退出..."

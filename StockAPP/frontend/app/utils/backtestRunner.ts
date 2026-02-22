@@ -20,13 +20,21 @@ interface PriceData {
   price: number;
 }
 
+interface CodeInfo {
+  code: string;
+  name: string;
+}
+
+const codeNameMap: Record<string, string> = {};
+
 async function fetchRealData(
   codes: string[],
   startDate: string,
   endDate: string,
   isETF: boolean = true
-): Promise<Record<string, PriceData[]>> {
+): Promise<{ data: Record<string, PriceData[]>; names: Record<string, string> }> {
   const data: Record<string, PriceData[]> = {};
+  const names: Record<string, string> = {};
   
   const fetchPromises = codes.map(async (code) => {
     try {
@@ -43,6 +51,10 @@ async function fetchRealData(
             price: item.close,
           }));
         }
+        if (result.name) {
+          names[code] = result.name;
+          codeNameMap[code] = result.name;
+        }
       }
     } catch (error) {
       console.error(`获取${code}数据失败:`, error);
@@ -50,7 +62,7 @@ async function fetchRealData(
   });
   
   await Promise.all(fetchPromises);
-  return data;
+  return { data, names };
 }
 
 function alignDataByDate(priceData: Record<string, PriceData[]>): { 
@@ -143,7 +155,8 @@ function calculateATR(highs: number[], lows: number[], closes: number[], period:
 
 export async function runBacktestAsync(config: BacktestConfig): Promise<BacktestResult> {
   const isETF = config.strategy === 'etf_rotation';
-  const rawData = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
+  const isStock = config.strategy === 'large_cap_low_drawdown';
+  const { data: rawData, names } = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF && !isStock);
   
   if (Object.keys(rawData).length === 0) {
     return createEmptyResult(config);
@@ -155,21 +168,26 @@ export async function runBacktestAsync(config: BacktestConfig): Promise<Backtest
     return createEmptyResult(config);
   }
   
+  const actualStartDate = commonDates[0];
+  const actualEndDate = commonDates[commonDates.length - 1];
+  
   switch (config.strategy) {
     case 'etf_rotation':
-      return runETFRotationBacktest(config, alignedData, commonDates);
+      return runETFRotationBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+    case 'large_cap_low_drawdown':
+      return runLargeCapLowDrawdownBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     case 'dual_ma':
-      return runDualMABacktest(config, alignedData, commonDates);
+      return runDualMABacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     case 'rsi':
-      return runRSIBacktest(config, alignedData, commonDates);
+      return runRSIBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     case 'macd':
-      return runMACDBacktest(config, alignedData, commonDates);
+      return runMACDBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     case 'bollinger':
-      return runBollingerBacktest(config, alignedData, commonDates);
+      return runBollingerBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     case 'grid':
-      return runGridBacktest(config, alignedData, commonDates);
+      return runGridBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
     default:
-      return runSimpleBacktest(config, alignedData, commonDates);
+      return runSimpleBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
   }
 }
 
@@ -195,7 +213,10 @@ function getPriceSafely(priceData: Record<string, PriceData[]>, code: string, in
 function runETFRotationBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
   const params = config.parameters || {};
   
@@ -232,6 +253,8 @@ function runETFRotationBacktest(
   const positions: Map<string, Position> = new Map();
   const equityCurve: { date: string; value: number; return: number }[] = [];
   const trades: Trade[] = [];
+  
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
   
   for (let i = 0; i < dates.length; i++) {
     const date = dates[i];
@@ -333,7 +356,7 @@ function runETFRotationBacktest(
           date,
           type: 'sell',
           code,
-          name: code,
+          name: getName(code),
           price,
           shares: pos.shares,
           amount: sellAmount,
@@ -363,7 +386,7 @@ function runETFRotationBacktest(
             date,
             type: 'sell',
             code,
-            name: code,
+            name: getName(code),
             price,
             shares: pos.shares,
             amount: sellAmount,
@@ -398,7 +421,7 @@ function runETFRotationBacktest(
                   date,
                   type: 'sell',
                   code,
-                  name: code,
+                  name: getName(code),
                   price,
                   shares: pos.shares,
                   amount: sellAmount,
@@ -437,7 +460,7 @@ function runETFRotationBacktest(
               date,
               type: 'buy',
               code,
-              name: code,
+              name: getName(code),
               price,
               shares,
               amount: buyAmount,
@@ -463,13 +486,16 @@ function runETFRotationBacktest(
     });
   }
   
-  return calculateMetrics(equityCurve, trades, config);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
 function runDualMABacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
   const fastPeriod = (config.parameters?.fast_period as number) || 10;
   const slowPeriod = (config.parameters?.slow_period as number) || 30;
@@ -487,6 +513,7 @@ function runDualMABacktest(
   }
   
   const prices = codeData.map(d => d.price);
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
   
   const fastMA = maType === 'EMA' ? calculateEMA(prices, fastPeriod) : calculateSMA(prices, fastPeriod);
   const slowMA = maType === 'EMA' ? calculateEMA(prices, slowPeriod) : calculateSMA(prices, slowPeriod);
@@ -514,7 +541,7 @@ function runDualMABacktest(
             date: dates[i],
             type: 'buy',
             code: targetCode,
-            name: targetCode,
+            name: getName(targetCode),
             price,
             shares,
             amount: buyAmount,
@@ -533,7 +560,7 @@ function runDualMABacktest(
           date: dates[i],
           type: 'sell',
           code: targetCode,
-          name: targetCode,
+          name: getName(targetCode),
           price,
           shares: position,
           amount: sellAmount,
@@ -552,13 +579,16 @@ function runDualMABacktest(
     });
   }
   
-  return calculateMetrics(equityCurve, trades, config);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
 function runRSIBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
   const rsiPeriod = (config.parameters?.rsi_period as number) || 14;
   const oversold = (config.parameters?.oversold as number) || 30;
@@ -577,6 +607,7 @@ function runRSIBacktest(
   
   const prices = codeData.map(d => d.price);
   const rsi = calculateRSI(prices, rsiPeriod);
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
   
   let cash = config.initialCapital;
   let position = 0;
@@ -601,7 +632,7 @@ function runRSIBacktest(
             date: dates[i],
             type: 'buy',
             code: targetCode,
-            name: targetCode,
+            name: getName(targetCode),
             price,
             shares,
             amount: buyAmount,
@@ -620,7 +651,7 @@ function runRSIBacktest(
           date: dates[i],
           type: 'sell',
           code: targetCode,
-          name: targetCode,
+          name: getName(targetCode),
           price,
           shares: position,
           amount: sellAmount,
@@ -639,29 +670,38 @@ function runRSIBacktest(
     });
   }
   
-  return calculateMetrics(equityCurve, trades, config);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
 function runMACDBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
-  return runDualMABacktest(config, priceData, dates);
+  return runDualMABacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
 }
 
 function runBollingerBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
-  return runRSIBacktest(config, priceData, dates);
+  return runRSIBacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
 }
 
 function runGridBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
   const codes = Object.keys(priceData);
   if (codes.length === 0 || dates.length === 0) {
@@ -679,6 +719,7 @@ function runGridBacktest(
     return createEmptyResult(config);
   }
   
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
   const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
   const equityCurve: { date: string; value: number; return: number }[] = [];
   
@@ -698,7 +739,7 @@ function runGridBacktest(
       date: dates[0],
       type: 'buy',
       code: targetCode,
-      name: targetCode,
+      name: getName(targetCode),
       price: firstPrice,
       shares,
       amount: shares * firstPrice,
@@ -706,13 +747,16 @@ function runGridBacktest(
     },
   ];
   
-  return calculateMetrics(equityCurve, trades, config);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
 function runSimpleBacktest(
   config: BacktestConfig,
   priceData: Record<string, PriceData[]>,
-  dates: string[]
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
 ): BacktestResult {
   const codes = Object.keys(priceData);
   if (codes.length === 0 || dates.length === 0) {
@@ -730,6 +774,7 @@ function runSimpleBacktest(
     return createEmptyResult(config);
   }
   
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
   const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
   const equityCurve: { date: string; value: number; return: number }[] = [];
   
@@ -749,7 +794,7 @@ function runSimpleBacktest(
       date: dates[0],
       type: 'buy',
       code: targetCode,
-      name: targetCode,
+      name: getName(targetCode),
       price: firstPrice,
       shares,
       amount: shares * firstPrice,
@@ -757,7 +802,7 @@ function runSimpleBacktest(
     },
   ];
   
-  return calculateMetrics(equityCurve, trades, config);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
 function createEmptyResult(config: BacktestConfig): BacktestResult {
@@ -772,6 +817,8 @@ function createEmptyResult(config: BacktestConfig): BacktestResult {
     profitFactor: 0,
     totalTrades: 0,
     finalAsset: config.initialCapital,
+    actualStartDate: config.startDate,
+    actualEndDate: config.endDate,
     equityCurve: [],
     drawdownSeries: [],
     trades: [],
@@ -782,7 +829,9 @@ function createEmptyResult(config: BacktestConfig): BacktestResult {
 function calculateMetrics(
   equityCurve: { date: string; value: number; return: number }[],
   trades: Trade[],
-  config: BacktestConfig
+  config: BacktestConfig,
+  actualStartDate?: string,
+  actualEndDate?: string
 ): BacktestResult {
   if (equityCurve.length === 0) {
     return createEmptyResult(config);
@@ -842,6 +891,8 @@ function calculateMetrics(
     profitFactor: 2.35,
     totalTrades: trades.length,
     finalAsset: finalValue,
+    actualStartDate: actualStartDate || equityCurve[0]?.date,
+    actualEndDate: actualEndDate || equityCurve[equityCurve.length - 1]?.date,
     equityCurve,
     drawdownSeries: equityCurve.map((e, i) => {
       const peak = Math.max(...equityValues.slice(0, i + 1));
@@ -853,4 +904,255 @@ function calculateMetrics(
     trades,
     monthlyReturns,
   };
+}
+
+function runLargeCapLowDrawdownBacktest(
+  config: BacktestConfig,
+  priceData: Record<string, PriceData[]>,
+  dates: string[],
+  names: Record<string, string>,
+  actualStartDate: string,
+  actualEndDate: string
+): BacktestResult {
+  const maxPositions = (config.parameters?.max_positions as number) || 3;
+  const stopLossRatio = (config.parameters?.stop_loss_ratio as number) || 0.05;
+  const takeProfitRatio = (config.parameters?.take_profit_ratio as number) || 0.35;
+  const drawdownLockThreshold = (config.parameters?.drawdown_lock_threshold as number) || 0.10;
+  const useRsrsTiming = config.parameters?.use_rsrs_timing !== false;
+  const usePartialUnlock = config.parameters?.use_partial_unlock !== false;
+  const rsrsBuyThreshold = (config.parameters?.rsrs_buy_threshold as number) || 0.7;
+  
+  const codes = Object.keys(priceData);
+  if (codes.length === 0 || dates.length === 0) {
+    return createEmptyResult(config);
+  }
+  
+  let cash = config.initialCapital;
+  const positions: Map<string, { code: string; shares: number; costPrice: number; highestPrice: number }> = new Map();
+  const trades: Trade[] = [];
+  const equityCurve: { date: string; value: number; return: number }[] = [];
+  
+  let maxTotalValue = config.initialCapital;
+  let drawdownLock = false;
+  let partialUnlock = false;
+  let unlockCooldownDays = 0;
+  const unlockCooldownMax = 10;
+  const fullUnlockDrawdown = 0.05;
+  const unlockPositionRatio = 0.3;
+  
+  const getName = (code: string) => names[code] || codeNameMap[code] || code;
+  
+  function calculateDrawdown(currentValue: number): number {
+    if (currentValue > maxTotalValue) {
+      maxTotalValue = currentValue;
+    }
+    return (maxTotalValue - currentValue) / maxTotalValue;
+  }
+  
+  function calculateStockScore(code: string, currentIndex: number): number {
+    const data = priceData[code];
+    if (!data || currentIndex < 30) return 0;
+    
+    const closes = data.slice(0, currentIndex + 1).map(d => d.price);
+    if (closes.length < 30) return 0;
+    
+    let score = 0;
+    
+    const momentum5 = (closes[closes.length - 1] / closes[closes.length - 6]) - 1;
+    if (momentum5 > 0.05) score += 25;
+    
+    const momentum20 = (closes[closes.length - 1] / closes[closes.length - 21]) - 1;
+    if (momentum20 > 0.10) score += 20;
+    
+    const ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const trendStrength = (ma5 - ma20) / ma20;
+    if (trendStrength > 0.01) score += 25;
+    
+    const returns = [];
+    for (let i = 1; i < Math.min(20, closes.length); i++) {
+      returns.push((closes[closes.length - i] - closes[closes.length - i - 1]) / closes[closes.length - i - 1]);
+    }
+    const volatility = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
+    if (volatility < 0.08) score += 5;
+    
+    return score;
+  }
+  
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+    
+    let portfolioValue = cash;
+    positions.forEach((pos, code) => {
+      const price = getPriceSafely(priceData, code, i);
+      if (price !== null) {
+        portfolioValue += pos.shares * price;
+      }
+    });
+    
+    const drawdown = calculateDrawdown(portfolioValue);
+    
+    if (drawdown >= drawdownLockThreshold) {
+      if (usePartialUnlock && unlockCooldownDays > 0) {
+        unlockCooldownDays--;
+      } else {
+        for (const [code, pos] of positions) {
+          const price = getPriceSafely(priceData, code, i);
+          if (price === null) continue;
+          
+          const sellAmount = pos.shares * price;
+          const commission = sellAmount * COMMISSION_RATE;
+          const stampDuty = sellAmount * STAMP_DUTY_RATE;
+          
+          cash += sellAmount - commission - stampDuty;
+          
+          trades.push({
+            date,
+            type: 'sell',
+            code,
+            name: getName(code),
+            price,
+            shares: pos.shares,
+            amount: sellAmount,
+            commission,
+          });
+        }
+        positions.clear();
+        drawdownLock = true;
+        partialUnlock = false;
+      }
+    }
+    
+    if (drawdownLock) {
+      if (usePartialUnlock && partialUnlock) {
+        if (unlockCooldownDays > 0) {
+          unlockCooldownDays--;
+        }
+        if (drawdown < fullUnlockDrawdown) {
+          partialUnlock = false;
+          drawdownLock = false;
+        }
+      } else if (drawdown < drawdownLockThreshold * 0.5) {
+        if (usePartialUnlock) {
+          partialUnlock = true;
+          unlockCooldownDays = unlockCooldownMax;
+        } else {
+          drawdownLock = false;
+        }
+      }
+    }
+    
+    for (const [code, pos] of positions) {
+      const price = getPriceSafely(priceData, code, i);
+      if (price === null) continue;
+      
+      if (price > pos.highestPrice) {
+        pos.highestPrice = price;
+      }
+      
+      const profitRatio = (price - pos.costPrice) / pos.costPrice;
+      
+      if (profitRatio >= takeProfitRatio || profitRatio <= -stopLossRatio) {
+        const sellAmount = pos.shares * price;
+        const commission = sellAmount * COMMISSION_RATE;
+        const stampDuty = sellAmount * STAMP_DUTY_RATE;
+        
+        cash += sellAmount - commission - stampDuty;
+        
+        trades.push({
+          date,
+          type: 'sell',
+          code,
+          name: getName(code),
+          price,
+          shares: pos.shares,
+          amount: sellAmount,
+          commission,
+        });
+        
+        positions.delete(code);
+      }
+    }
+    
+    if (!drawdownLock || partialUnlock) {
+      const currentPositions = positions.size;
+      
+      if (currentPositions < maxPositions) {
+        const scores: { code: string; score: number }[] = [];
+        
+        for (const code of codes) {
+          if (!positions.has(code)) {
+            const score = calculateStockScore(code, i);
+            if (score > 0) {
+              scores.push({ code, score });
+            }
+          }
+        }
+        
+        scores.sort((a, b) => b.score - a.score);
+        const buyCandidates = scores.slice(0, maxPositions - currentPositions);
+        
+        let availableCash = cash;
+        if (partialUnlock) {
+          const currentPositionValue = Array.from(positions.values()).reduce((sum, pos) => {
+            const price = getPriceSafely(priceData, pos.code, i);
+            return sum + (price !== null ? pos.shares * price : 0);
+          }, 0);
+          const maxPositionValue = portfolioValue * unlockPositionRatio;
+          availableCash = Math.min(cash, maxPositionValue - currentPositionValue);
+        }
+        
+        const cashPerStock = buyCandidates.length > 0 ? availableCash / buyCandidates.length * 0.95 : 0;
+        
+        for (const { code } of buyCandidates) {
+          if (positions.size >= maxPositions) break;
+          
+          const price = getPriceSafely(priceData, code, i);
+          if (price === null || price <= 0) continue;
+          
+          const shares = Math.floor(cashPerStock / price / 100) * 100;
+          
+          if (shares >= 100 && cash >= shares * price * (1 + COMMISSION_RATE)) {
+            const buyAmount = shares * price;
+            const commission = buyAmount * COMMISSION_RATE;
+            
+            cash -= buyAmount + commission;
+            positions.set(code, {
+              code,
+              shares,
+              costPrice: price,
+              highestPrice: price,
+            });
+            
+            trades.push({
+              date,
+              type: 'buy',
+              code,
+              name: getName(code),
+              price,
+              shares,
+              amount: buyAmount,
+              commission,
+            });
+          }
+        }
+      }
+    }
+    
+    portfolioValue = cash;
+    positions.forEach((pos, code) => {
+      const price = getPriceSafely(priceData, code, i);
+      if (price !== null) {
+        portfolioValue += pos.shares * price;
+      }
+    });
+    
+    equityCurve.push({
+      date,
+      value: portfolioValue,
+      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
+    });
+  }
+  
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }

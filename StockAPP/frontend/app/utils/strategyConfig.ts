@@ -1,4 +1,4 @@
-export type StrategyType = 'etf_rotation' | 'dual_ma' | 'rsi' | 'macd' | 'bollinger' | 'grid';
+export type StrategyType = 'etf_rotation' | 'large_cap_low_drawdown' | 'dual_ma' | 'rsi' | 'macd' | 'bollinger' | 'grid';
 
 export type StrategyCategory = 'simple' | 'compound';
 
@@ -118,6 +118,94 @@ const compoundStrategies: Strategy[] = [
     ],
     适用场景: '适合趋势明显、波动较大的市场环境，能够有效捕捉板块轮动机会',
     风险提示: '震荡市场可能频繁换仓增加交易成本，趋势反转时可能产生较大回撤',
+  },
+  {
+    id: 'large_cap_low_drawdown',
+    name: '大市值低回撤策略',
+    icon: '🛡️',
+    category: 'compound',
+    type: '动量策略',
+    color: '#2ca02c',
+    description: '基于六因子打分系统的股票策略，从沪深300成分股中筛选优质标的。结合RSRS择时指标和回撤锁定机制，实现低回撤稳健收益。六因子包括：5日动量、20日动量、趋势强度、量比、波动率、市值因子。',
+    logic: [
+      '1. 六因子打分系统筛选沪深300优质股票',
+      '2. RSRS择时指标判断市场趋势强度',
+      '3. 沪深300站上20日线+MACD金叉+RSRS>0.7时解锁',
+      '4. 回撤超10%触发锁定，清仓避险',
+      '5. 分批解锁：首次解锁允许30%仓位',
+      '6. 冷却期：解锁后10天内不触发强锁定',
+      '7. 完全解锁：回撤降至5%以下',
+      '8. 牛市加仓至95%，熊市减仓至60%',
+      '9. 个股止盈35%，止损5%',
+    ],
+    parameters: [
+      {
+        key: 'max_positions',
+        label: '最大持仓数量',
+        type: 'slider',
+        default: 3,
+        min: 1,
+        max: 5,
+        step: 1,
+        description: '最大持仓股票数量',
+      },
+      {
+        key: 'stop_loss_ratio',
+        label: '个股止损比例',
+        type: 'slider',
+        default: 0.05,
+        min: 0.03,
+        max: 0.10,
+        step: 0.01,
+        description: '个股止损阈值',
+      },
+      {
+        key: 'take_profit_ratio',
+        label: '个股止盈比例',
+        type: 'slider',
+        default: 0.35,
+        min: 0.15,
+        max: 0.50,
+        step: 0.05,
+        description: '个股止盈阈值',
+      },
+      {
+        key: 'drawdown_lock_threshold',
+        label: '回撤锁定阈值',
+        type: 'slider',
+        default: 0.10,
+        min: 0.05,
+        max: 0.15,
+        step: 0.01,
+        description: '触发锁定的回撤阈值',
+      },
+      {
+        key: 'use_rsrs_timing',
+        label: 'RSRS择时指标',
+        type: 'boolean',
+        default: true,
+        description: '启用RSRS择时指标',
+      },
+      {
+        key: 'use_partial_unlock',
+        label: '分批解锁机制',
+        type: 'boolean',
+        default: true,
+        description: '启用分批解锁机制',
+      },
+      {
+        key: 'rsrs_buy_threshold',
+        label: 'RSRS买入阈值',
+        type: 'slider',
+        default: 0.7,
+        min: 0.5,
+        max: 1.0,
+        step: 0.1,
+        description: 'RSRS标准分买入阈值',
+      },
+    ],
+    适用场景: '适合趋势明显的市场环境，追求稳健收益、低回撤的投资者',
+    风险提示: '震荡市场可能频繁换仓增加交易成本，极端行情下可能产生较大回撤',
   },
 ];
 
@@ -412,9 +500,9 @@ export interface BacktestConfig {
   endDate: string;
   initialCapital: number;
   benchmark: string;
-  commission: number;
-  stampDuty: number;
-  slippage: number;
+  commission?: number;
+  stampDuty?: number;
+  slippage?: number;
   parameters: Record<string, any>;
   etfCodes: string[];
 }

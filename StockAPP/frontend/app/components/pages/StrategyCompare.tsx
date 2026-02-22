@@ -9,17 +9,20 @@ import ETFSelector from '../backtest/ETFSelector';
 import { runBacktest } from '../../utils/backtestRunner';
 import type { BacktestResult } from '../../utils/backtestEngine';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { usePersistentState } from '../../hooks';
+
+const DEFAULT_COMPARE_PARAMS = {
+  startDate: '2021-01-01',
+  endDate: '2024-01-01',
+  initialCapital: 100000,
+};
+
+const DEFAULT_SELECTED_ETFS = etfPool.filter(etf => etf.selected).map(etf => etf.code);
 
 export default function StrategyCompare() {
-  const [selectedStrategies, setSelectedStrategies] = useState<StrategyType[]>(['etf_rotation']);
-  const [selectedETFs, setSelectedETFs] = useState<string[]>(
-    etfPool.filter(etf => etf.selected).map(etf => etf.code)
-  );
-  const [params, setParams] = useState({
-    startDate: '2021-01-01',
-    endDate: '2024-01-01',
-    initialCapital: 100000,
-  });
+  const [selectedStrategies, setSelectedStrategies] = usePersistentState<StrategyType[]>('compare_strategies', ['etf_rotation']);
+  const [selectedETFs, setSelectedETFs] = usePersistentState<string[]>('compare_etfs', DEFAULT_SELECTED_ETFS);
+  const [params, setParams] = usePersistentState('compare_params', DEFAULT_COMPARE_PARAMS);
   const [results, setResults] = useState<Map<StrategyType, BacktestResult>>(new Map());
   const [isRunning, setIsRunning] = useState(false);
 

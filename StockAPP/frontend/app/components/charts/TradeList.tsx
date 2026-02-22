@@ -33,6 +33,7 @@ export default function TradeList({ trades }: TradeListProps) {
                 <TableHead className="text-xs">日期</TableHead>
                 <TableHead className="text-xs">类型</TableHead>
                 <TableHead className="text-xs">代码</TableHead>
+                <TableHead className="text-xs">名称</TableHead>
                 <TableHead className="text-xs text-right">价格</TableHead>
                 <TableHead className="text-xs text-right">数量</TableHead>
                 <TableHead className="text-xs text-right">金额</TableHead>
@@ -56,6 +57,7 @@ export default function TradeList({ trades }: TradeListProps) {
                     </Badge>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{trade.code}</TableCell>
+                  <TableCell className="text-xs">{trade.name || trade.code}</TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     {trade.price.toFixed(3)}
                   </TableCell>

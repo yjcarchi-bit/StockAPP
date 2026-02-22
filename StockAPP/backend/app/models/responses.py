@@ -92,6 +92,7 @@ class StockInfo(BaseModel):
 class ETFData(BaseModel):
     """ETF数据"""
     code: str
+    name: str = ""
     data: List[Dict[str, Any]]
 
 

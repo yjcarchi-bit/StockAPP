@@ -18,7 +18,11 @@ export default function BacktestResults({ result }: BacktestResultsProps) {
         <CardHeader>
           <CardTitle>📊 回测结果</CardTitle>
           <CardDescription>
-            回测期间策略表现分析
+            {result.actualStartDate && result.actualEndDate ? (
+              <>回测期间: {result.actualStartDate} 至 {result.actualEndDate}</>
+            ) : (
+              <>回测期间策略表现分析</>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>

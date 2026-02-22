@@ -53,8 +53,9 @@ async def get_etf_data(
         
         service = DataSourceService()
         data = service.get_etf_history(code, start_date, end_date)
+        info = service.get_etf_info(code)
         
-        return ETFData(code=code, data=data)
+        return ETFData(code=code, name=info.get("name", code), data=data)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -118,8 +119,10 @@ async def get_stock_data(
         
         service = DataSourceService()
         data = service.get_stock_history(code, start_date, end_date)
+        stocks = service.search_stocks(code, 1)
+        name = stocks[0].get("name", code) if stocks else code
         
-        return ETFData(code=code, data=data)
+        return ETFData(code=code, name=name, data=data)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

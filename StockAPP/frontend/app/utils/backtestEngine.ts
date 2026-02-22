@@ -12,6 +12,10 @@ export interface BacktestResult {
   totalTrades: number; // 交易次数
   finalAsset: number; // 最终资产
 
+  // 实际回测时间
+  actualStartDate?: string;
+  actualEndDate?: string;
+
   // 时间序列数据
   equityCurve: EquityPoint[]; // 资金曲线
   drawdownSeries: DrawdownPoint[]; // 回撤序列

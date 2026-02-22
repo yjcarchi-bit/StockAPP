@@ -7,6 +7,7 @@ import ParameterOptimization from './components/pages/ParameterOptimization';
 import DataManagement from './components/pages/DataManagement';
 import SettingsPage from './components/pages/SettingsPage';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
+import { usePersistentState } from './hooks';
 
 type Page = 'home' | 'backtest' | 'compare' | 'optimization' | 'data' | 'settings';
 
@@ -29,7 +30,7 @@ function ThemeToggle() {
 }
 
 function AppContent() {
-  const [currentPage, setCurrentPage] = useState<Page>('home');
+  const [currentPage, setCurrentPage] = usePersistentState<Page>('current_page', 'home');
 
   const navItems = [
     { id: 'home' as Page, label: '首页', icon: TrendingUp },
