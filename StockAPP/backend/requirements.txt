@@ -1,0 +1,10 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+python-multipart==0.0.6
+
+efinance>=0.5.5
+pandas>=2.0.0
+numpy>=1.24.0
+
+python-dateutil>=2.8.2

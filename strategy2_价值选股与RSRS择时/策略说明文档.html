@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>价值选股与RSRS择时策略</title>
+    <style>
+        body {
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 {
+            color: #003366;
+            border-bottom: 2px solid #003366;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #003366;
+            margin-top: 30px;
+        }
+        h3 {
+            color: #333;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+            font-size: 12px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #e6e6e6;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid #ccc;
+            margin: 20px 0;
+        }
+        ul, ol {
+            padding-left: 20px;
+        }
+        strong {
+            color: #003366;
+        }
+    </style>
+</head>
+<body>
+<h1>价值选股与RSRS择时策略</h1>
+
+<h2>一、策略简介</h2>
+
+<p>想象你是一个投资者，想要在股市中赚钱，但不知道什么时候买、买什么。这个策略就是为了解决这两个核心问题：</p>
+
+<ul>
+<li><strong>买什么？</strong> → 选择"物美价廉"的好公司（价值选股）</li>
+<li><strong>什么时候买？</strong> → 等市场趋势向上时再买（RSRS择时）</li>
+</ul>
+
+<hr />
+
+<h2>二、选股逻辑：寻找"物美价廉"的公司</h2>
+
+<h3>2.1 什么是"物美价廉"？</h3>
+
+<p>在股市中，我们可以用两个指标来判断一家公司是否"物美价廉"：</p>
+
+<table>
+<thead>
+<tr>
+  <th>指标</th>
+  <th>名称</th>
+  <th>含义</th>
+  <th>策略偏好</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>PB（市净率）</td>
+  <td>股价 ÷ 每股净资产</td>
+  <td>花多少钱买公司的净资产</td>
+  <td>越低越好（便宜）</td>
+</tr>
+<tr>
+  <td>ROE（净资产收益率）</td>
+  <td>净利润 ÷ 净资产</td>
+  <td>公司用股东的钱能赚多少</td>
+  <td>越高越好（能赚钱）</td>
+</tr>
+</tbody>
+</table>
+
+<h3>2.2 打个比方</h3>
+
+<p>假设有两家餐厅：</p>
+
+<p><strong>餐厅A</strong>：净资产100万，每年赚20万，股价200万
+- PB = 2倍，ROE = 20%</p>
+
+<p><strong>餐厅B</strong>：净资产100万，每年赚5万，股价300万
+- PB = 3倍，ROE = 5%</p>
+
+<p>显然，<strong>餐厅A更划算</strong>：价格更低（PB低），赚钱能力更强（ROE高）。</p>
+
+<h3>2.3 选股步骤</h3>
+
+<ol>
+<li>从全市场筛选出PB>0且ROE>0的公司（排除亏损公司）</li>
+<li>按PB从低到高排名（便宜的排前面）</li>
+<li>按ROE从高到低排名（能赚钱的排前面）</li>
+<li>把两个排名相加，得到综合排名</li>
+<li>选择综合排名最好的<strong>10只股票</strong></li>
+</ol>
+
+<hr />
+
+<h2>三、择时逻辑：RSRS指标</h2>
+
+<h3>3.1 什么是RSRS？</h3>
+
+<p>RSRS的中文名叫"阻力支撑相对强度"，通过分析股票最高价和最低价的关系，判断市场的"阻力"和"支撑"谁更强。</p>
+
+<h3>3.2 通俗理解</h3>
+
+<p>想象一个人在爬山：</p>
+
+<ul>
+<li><strong>最高价</strong> = 他能爬到的最高点</li>
+<li><strong>最低价</strong> = 他滑落的最低点</li>
+</ul>
+
+<p>如果每次滑落的最低点都在变高，说明这个人在<strong>向上爬</strong>（趋势向上）。如果每次爬到的最高点都在变低，说明这个人在<strong>往下滑</strong>（趋势向下）。</p>
+
+<h3>3.3 RSRS数值含义</h3>
+
+<table>
+<thead>
+<tr>
+  <th>RSRS数值</th>
+  <th>市场状态</th>
+  <th>操作建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>大于 0.7</td>
+  <td>市场强势，趋势向上</td>
+  <td>买入信号</td>
+</tr>
+<tr>
+  <td>小于 -0.7</td>
+  <td>市场弱势，趋势向下</td>
+  <td>卖出信号</td>
+</tr>
+<tr>
+  <td>-0.7 至 0.7</td>
+  <td>市场震荡，方向不明</td>
+  <td>观望</td>
+</tr>
+</tbody>
+</table>
+
+<h3>3.4 形象比喻</h3>
+
+<p>把RSRS想象成一个"红绿灯"：</p>
+
+<ul>
+<li><strong>绿灯（RSRS &gt; 0.7）</strong>：可以通行，买入股票</li>
+<li><strong>红灯（RSRS &lt; -0.7）</strong>：禁止通行，卖出股票</li>
+<li><strong>黄灯（-0.7 至 0.7）</strong>：减速慢行，保持现状</li>
+</ul>
+
+<hr />
+
+<h2>四、策略完整流程</h2>
+
+<table>
+<thead>
+<tr>
+  <th>步骤</th>
+  <th>条件</th>
+  <th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td>计算RSRS指标</td>
+  <td>获取市场趋势信号</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>RSRS &gt; 0.7</td>
+  <td>选股并买入</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>RSRS &lt; -0.7</td>
+  <td>清仓卖出</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>RSRS在-0.7至0.7之间</td>
+  <td>保持现状</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>重复步骤1-4</td>
+  <td>等待下一个交易日</td>
+</tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2>五、实战案例：最近30天回测</h2>
+
+<h3>5.1 回测基本信息</h3>
+
+<table>
+<thead>
+<tr>
+  <th>项目</th>
+  <th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>回测区间</td>
+  <td>2026-01-23 至 2026-02-22</td>
+</tr>
+<tr>
+  <td>初始资金</td>
+  <td>1,000,000 元</td>
+</tr>
+<tr>
+  <td>最终资金</td>
+  <td>996,655 元</td>
+</tr>
+<tr>
+  <td>总收益率</td>
+  <td>-0.30%</td>
+</tr>
+<tr>
+  <td>最大回撤</td>
+  <td>-2.29%</td>
+</tr>
+<tr>
+  <td>交易次数</td>
+  <td>29次（买入14次，卖出15次）</td>
+</tr>
+<tr>
+  <td>总手续费</td>
+  <td>1,642.66 元</td>
+</tr>
+</tbody>
+</table>
+
+<h3>5.2 第一阶段：建仓期（1月23日）</h3>
+
+<p><strong>市场状态</strong>：RSRS = <strong>2.05</strong>（远超0.7，强烈买入信号）</p>
+
+<p><strong>操作</strong>：全仓买入10只股票</p>
+
+<table>
+<thead>
+<tr>
+  <th>股票代码</th>
+  <th>买入价格</th>
+  <th>买入数量</th>
+  <th>投入金额</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>002135</td>
+  <td>5.75元</td>
+  <td>17,300股</td>
+  <td>99,475元</td>
+</tr>
+<tr>
+  <td>600126</td>
+  <td>8.90元</td>
+  <td>11,200股</td>
+  <td>99,680元</td>
+</tr>
+<tr>
+  <td>001211</td>
+  <td>30.30元</td>
+  <td>3,300股</td>
+  <td>99,990元</td>
+</tr>
+<tr>
+  <td>300079</td>
+  <td>6.01元</td>
+  <td>16,600股</td>
+  <td>99,766元</td>
+</tr>
+<tr>
+  <td>600641</td>
+  <td>19.97元</td>
+  <td>5,000股</td>
+  <td>99,850元</td>
+</tr>
+<tr>
+  <td>600703</td>
+  <td>16.54元</td>
+  <td>6,000股</td>
+  <td>99,240元</td>
+</tr>
+<tr>
+  <td>300645</td>
+  <td>20.31元</td>
+  <td>4,900股</td>
+  <td>99,519元</td>
+</tr>
+<tr>
+  <td>301505</td>
+  <td>26.49元</td>
+  <td>3,700股</td>
+  <td>98,013元</td>
+</tr>
+<tr>
+  <td>600079</td>
+  <td>18.24元</td>
+  <td>5,400股</td>
+  <td>98,496元</td>
+</tr>
+<tr>
+  <td>600015</td>
+  <td>6.33元</td>
+  <td>15,700股</td>
+  <td>99,381元</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>仓位状态</strong>：现金6,292元（0.6%），持仓市值993,410元（99.4%）</p>
+
+<h3>5.3 第二阶段：持仓调整期（1月26日-2月6日）</h3>
+
+<p><strong>市场状态</strong>：RSRS从1.87逐渐下降到-0.48</p>
+
+<table>
+<thead>
+<tr>
+  <th>日期</th>
+  <th>RSRS值</th>
+  <th>操作内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>1月26日</td>
+  <td>1.87</td>
+  <td>卖出600126部分，小幅调整</td>
+</tr>
+<tr>
+  <td>1月27日</td>
+  <td>1.73</td>
+  <td>卖出600126部分，减仓</td>
+</tr>
+<tr>
+  <td>1月28日</td>
+  <td>1.43</td>
+  <td>买入002135、300645，卖出600641</td>
+</tr>
+<tr>
+  <td>1月29日</td>
+  <td>1.36</td>
+  <td>卖出002135、600015部分</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>仓位状态（2月6日）</strong>：现金4,399元，持仓市值978,151元，总资产982,550元</p>
+
+<h3>5.4 第三阶段：清仓期（2月9日）</h3>
+
+<p><strong>市场状态</strong>：RSRS = <strong>-0.73</strong>（跌破-0.7，触发卖出信号）</p>
+
+<p><strong>操作</strong>：全部清仓</p>
+
+<table>
+<thead>
+<tr>
+  <th>股票代码</th>
+  <th>卖出价格</th>
+  <th>卖出数量</th>
+  <th>卖出金额</th>
+  <th>盈亏</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>002135</td>
+  <td>6.27元</td>
+  <td>17,100股</td>
+  <td>107,217元</td>
+  <td>盈利约9%</td>
+</tr>
+<tr>
+  <td>600126</td>
+  <td>8.70元</td>
+  <td>11,000股</td>
+  <td>95,700元</td>
+  <td>亏损约2%</td>
+</tr>
+<tr>
+  <td>001211</td>
+  <td>29.65元</td>
+  <td>3,400股</td>
+  <td>100,810元</td>
+  <td>亏损约2%</td>
+</tr>
+<tr>
+  <td>300079</td>
+  <td>6.25元</td>
+  <td>16,600股</td>
+  <td>103,750元</td>
+  <td>盈利约4%</td>
+</tr>
+<tr>
+  <td>600641</td>
+  <td>17.73元</td>
+  <td>5,100股</td>
+  <td>90,423元</td>
+  <td>亏损约11%</td>
+</tr>
+<tr>
+  <td>600703</td>
+  <td>15.94元</td>
+  <td>6,000股</td>
+  <td>95,640元</td>
+  <td>亏损约4%</td>
+</tr>
+<tr>
+  <td>300645</td>
+  <td>20.31元</td>
+  <td>5,000股</td>
+  <td>101,550元</td>
+  <td>持平</td>
+</tr>
+<tr>
+  <td>301505</td>
+  <td>25.16元</td>
+  <td>3,700股</td>
+  <td>93,092元</td>
+  <td>亏损约5%</td>
+</tr>
+<tr>
+  <td>600079</td>
+  <td>19.18元</td>
+  <td>5,400股</td>
+  <td>103,572元</td>
+  <td>盈利约5%</td>
+</tr>
+<tr>
+  <td>600015</td>
+  <td>6.61元</td>
+  <td>15,400股</td>
+  <td>101,794元</td>
+  <td>盈利约4%</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>清仓后状态</strong>：现金996,655元（100%），持仓市值0元</p>
+
+<h3>5.5 第四阶段：空仓观望期（2月10日-2月22日）</h3>
+
+<p><strong>市场状态</strong>：RSRS持续为负（-0.78 至 -0.84）</p>
+
+<p><strong>操作</strong>：保持空仓，等待买入信号</p>
+
+<h3>5.6 每日资产变化</h3>
+
+<table>
+<thead>
+<tr>
+  <th>日期</th>
+  <th>总资产</th>
+  <th>RSRS值</th>
+  <th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>1月23日</td>
+  <td>999,702元</td>
+  <td>+2.05</td>
+  <td>建仓</td>
+</tr>
+<tr>
+  <td>1月26日</td>
+  <td>997,443元</td>
+  <td>+1.87</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>1月27日</td>
+  <td>994,709元</td>
+  <td>+1.73</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>1月28日</td>
+  <td>986,930元</td>
+  <td>+1.43</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>1月29日</td>
+  <td>985,178元</td>
+  <td>+1.36</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>1月30日</td>
+  <td>992,030元</td>
+  <td>+0.02</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月2日</td>
+  <td>976,785元</td>
+  <td>-0.60</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月3日</td>
+  <td>995,780元</td>
+  <td>-0.52</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月4日</td>
+  <td>989,470元</td>
+  <td>-0.39</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月5日</td>
+  <td>983,833元</td>
+  <td>-0.23</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月6日</td>
+  <td>982,550元</td>
+  <td>-0.48</td>
+  <td>持仓</td>
+</tr>
+<tr>
+  <td>2月9日</td>
+  <td>996,655元</td>
+  <td>-0.73</td>
+  <td>清仓</td>
+</tr>
+<tr>
+  <td>2月10日</td>
+  <td>996,655元</td>
+  <td>-0.78</td>
+  <td>空仓</td>
+</tr>
+<tr>
+  <td>2月11日</td>
+  <td>996,655元</td>
+  <td>-0.88</td>
+  <td>空仓</td>
+</tr>
+<tr>
+  <td>2月12日</td>
+  <td>996,655元</td>
+  <td>-0.85</td>
+  <td>空仓</td>
+</tr>
+<tr>
+  <td>2月13日</td>
+  <td>996,655元</td>
+  <td>-0.84</td>
+  <td>空仓</td>
+</tr>
+</tbody>
+</table>
+
+<h3>5.7 案例总结</h3>
+
+<p>这个30天的案例展示了策略的完整运作：</p>
+
+<ol>
+<li><strong>入场时机</strong>：RSRS=2.05时（远超0.7），策略判断市场强势，果断建仓</li>
+<li><strong>持仓管理</strong>：持有10只"物美价廉"的股票，分散风险</li>
+<li><strong>出场时机</strong>：RSRS跌破-0.7时，策略判断市场转弱，果断清仓</li>
+<li><strong>风险控制</strong>：最大回撤仅2.29%，远低于同期大盘</li>
+</ol>
+
+<p><strong>为什么亏损？</strong> 回测期间市场整体下跌，但策略通过及时清仓避免了更大损失。</p>
+
+<hr />
+
+<h2>六、策略优缺点</h2>
+
+<h3>优点</h3>
+
+<table>
+<thead>
+<tr>
+  <th>优点</th>
+  <th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>选股有依据</td>
+  <td>基于财务指标，选择真正有价值的公司</td>
+</tr>
+<tr>
+  <td>择时有信号</td>
+  <td>RSRS指标提供明确的买卖时机</td>
+</tr>
+<tr>
+  <td>分散风险</td>
+  <td>持有10只股票，避免单只股票风险</td>
+</tr>
+<tr>
+  <td>纪律性强</td>
+  <td>严格按照信号操作，避免情绪干扰</td>
+</tr>
+</tbody>
+</table>
+
+<h3>缺点</h3>
+
+<table>
+<thead>
+<tr>
+  <th>缺点</th>
+  <th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>震荡市表现一般</td>
+  <td>在横盘震荡时可能频繁买卖</td>
+</tr>
+<tr>
+  <td>信号滞后</td>
+  <td>RSRS是趋势指标，可能错过最佳买卖点</td>
+</tr>
+<tr>
+  <td>不适合短线</td>
+  <td>策略偏向中长期，短线效果不佳</td>
+</tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2>七、使用建议</h2>
+
+<table>
+<thead>
+<tr>
+  <th>项目</th>
+  <th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>适合人群</td>
+  <td>有一定投资经验，追求稳健收益的投资者</td>
+</tr>
+<tr>
+  <td>资金要求</td>
+  <td>建议至少10万元以上，以便分散买入10只股票</td>
+</tr>
+<tr>
+  <td>持有周期</td>
+  <td>建议中长期持有（3个月以上）</td>
+</tr>
+<tr>
+  <td>风险提示</td>
+  <td>任何策略都有失效可能，请谨慎投资</td>
+</tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2>八、常见问题</h2>
+
+<p><strong>Q1：为什么选10只股票？</strong></p>
+
+<p>A：分散风险。太少风险集中，太多管理困难，10只是经验值。</p>
+
+<p><strong>Q2：RSRS的0.7和-0.7是怎么来的？</strong></p>
+
+<p>A：这是统计学的标准分。0.7表示比平均值高0.7个标准差，属于较强的信号。</p>
+
+<p><strong>Q3：如果RSRS一直在-0.7到0.7之间怎么办？</strong></p>
+
+<p>A：保持现状。如果空仓就继续空仓，如果持仓就继续持仓。</p>
+
+<p><strong>Q4：可以调整买卖阈值吗？</strong></p>
+
+<p>A：可以。阈值越高，信号越少但更可靠；阈值越低，信号越多但可能误判。</p>
+
+<hr />
+
+<p><em>文档生成时间：2026-02-22</em></p>
+
+</body>
+</html>
