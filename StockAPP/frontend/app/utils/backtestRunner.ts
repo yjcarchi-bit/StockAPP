@@ -25,16 +25,132 @@ interface CodeInfo {
   name: string;
 }
 
+export interface StockScoreDetail {
+  code: string;
+  name: string;
+  scores: {
+    momentum5: number;
+    momentum20: number;
+    trendStrength: number;
+    volumeRatio: number;
+    volatility: number;
+    marketCap: number;
+  };
+  totalScore: number;
+  rank: number;
+  isSelected: boolean;
+}
+
+export interface TradeDecision {
+  action: 'buy' | 'sell' | 'hold';
+  code: string;
+  name: string;
+  reason: string;
+}
+
+export interface DailySelectionResult {
+  date: string;
+  marketStatus: 'normal' | 'drawdown_lock' | 'partial_unlock';
+  candidates: StockScoreDetail[];
+  selectedStocks: string[];
+  trades: TradeDecision[];
+  portfolioValue: number;
+  drawdown: number;
+  cashRatio: number;
+}
+
+export interface BacktestProgressUpdate {
+  currentIndex: number;
+  totalDays: number;
+  currentDate: string;
+  percent: number;
+  dailyResult: DailySelectionResult | null;
+}
+
+export interface DataRangeInfo {
+  code: string;
+  name: string;
+  start: string;
+  end: string;
+  count: number;
+}
+
+export interface BacktestDataInfo {
+  requestedStart: string;
+  requestedEnd: string;
+  actualStart: string;
+  actualEnd: string;
+  dataRanges: DataRangeInfo[];
+  warning?: string;
+}
+
+export type ProgressCallback = (update: BacktestProgressUpdate) => void;
+
 const codeNameMap: Record<string, string> = {};
+
+let hs300StocksCache: { code: string; name: string }[] | null = null;
+
+async function fetchHS300Stocks(): Promise<{ code: string; name: string }[]> {
+  if (hs300StocksCache) {
+    return hs300StocksCache;
+  }
+  
+  try {
+    const response = await fetch(`${API_BASE}/data/hs300/stocks`);
+    if (response.ok) {
+      const stocks = await response.json();
+      hs300StocksCache = stocks.map((s: any) => ({
+        code: s.code,
+        name: s.name,
+      }));
+      return hs300StocksCache!;
+    }
+  } catch (error) {
+    console.error('获取沪深300成分股失败:', error);
+  }
+  
+  return [
+    { code: '600519', name: '贵州茅台' },
+    { code: '601318', name: '中国平安' },
+    { code: '600036', name: '招商银行' },
+    { code: '601166', name: '兴业银行' },
+    { code: '600887', name: '伊利股份' },
+    { code: '601398', name: '工商银行' },
+    { code: '600030', name: '中信证券' },
+    { code: '601288', name: '农业银行' },
+    { code: '600276', name: '恒瑞医药' },
+    { code: '600000', name: '浦发银行' },
+    { code: '601888', name: '中国中免' },
+    { code: '600016', name: '民生银行' },
+    { code: '601012', name: '隆基绿能' },
+    { code: '600048', name: '保利发展' },
+    { code: '600900', name: '长江电力' },
+    { code: '000858', name: '五粮液' },
+    { code: '000333', name: '美的集团' },
+    { code: '000651', name: '格力电器' },
+    { code: '000002', name: '万科A' },
+    { code: '000001', name: '平安银行' },
+    { code: '002594', name: '比亚迪' },
+    { code: '300750', name: '宁德时代' },
+    { code: '002475', name: '立讯精密' },
+    { code: '000725', name: '京东方A' },
+    { code: '002415', name: '海康威视' },
+  ];
+}
 
 async function fetchRealData(
   codes: string[],
   startDate: string,
   endDate: string,
   isETF: boolean = true
-): Promise<{ data: Record<string, PriceData[]>; names: Record<string, string> }> {
+): Promise<{ 
+  data: Record<string, PriceData[]>; 
+  names: Record<string, string>;
+  dataRanges: Record<string, { start: string; end: string; count: number }>;
+}> {
   const data: Record<string, PriceData[]> = {};
   const names: Record<string, string> = {};
+  const dataRanges: Record<string, { start: string; end: string; count: number }> = {};
   
   const fetchPromises = codes.map(async (code) => {
     try {
@@ -50,6 +166,13 @@ async function fetchRealData(
             date: item.date,
             price: item.close,
           }));
+          if (result.data.length > 0) {
+            dataRanges[code] = {
+              start: result.data[0].date,
+              end: result.data[result.data.length - 1].date,
+              count: result.data.length,
+            };
+          }
         }
         if (result.name) {
           names[code] = result.name;
@@ -62,7 +185,7 @@ async function fetchRealData(
   });
   
   await Promise.all(fetchPromises);
-  return { data, names };
+  return { data, names, dataRanges };
 }
 
 function alignDataByDate(priceData: Record<string, PriceData[]>): { 
@@ -153,10 +276,40 @@ function calculateATR(highs: number[], lows: number[], closes: number[], period:
   return atr;
 }
 
-export async function runBacktestAsync(config: BacktestConfig): Promise<BacktestResult> {
+export async function runBacktestAsync(
+  config: BacktestConfig,
+  onProgress?: ProgressCallback
+): Promise<BacktestResult> {
   const isETF = config.strategy === 'etf_rotation';
-  const isStock = config.strategy === 'large_cap_low_drawdown';
-  const { data: rawData, names } = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF && !isStock);
+  const isLargeCapStrategy = config.strategy === 'large_cap_low_drawdown';
+  
+  let rawData: Record<string, PriceData[]>;
+  let names: Record<string, string>;
+  let dataRanges: Record<string, { start: string; end: string; count: number }>;
+  
+  if (isLargeCapStrategy) {
+    const hs300Stocks = await fetchHS300Stocks();
+    const stockCodes = hs300Stocks.slice(0, 50).map(s => s.code);
+    
+    hs300Stocks.forEach(s => {
+      codeNameMap[s.code] = s.name;
+    });
+    
+    const result = await fetchRealData(stockCodes, config.startDate, config.endDate, false);
+    rawData = result.data;
+    names = { ...result.names };
+    hs300Stocks.forEach(s => {
+      if (!names[s.code]) {
+        names[s.code] = s.name;
+      }
+    });
+    dataRanges = result.dataRanges;
+  } else {
+    const result = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
+    rawData = result.data;
+    names = result.names;
+    dataRanges = result.dataRanges;
+  }
   
   if (Object.keys(rawData).length === 0) {
     return createEmptyResult(config);
@@ -171,24 +324,59 @@ export async function runBacktestAsync(config: BacktestConfig): Promise<Backtest
   const actualStartDate = commonDates[0];
   const actualEndDate = commonDates[commonDates.length - 1];
   
+  const dataInfo: BacktestDataInfo = {
+    requestedStart: config.startDate,
+    requestedEnd: config.endDate,
+    actualStart: actualStartDate,
+    actualEnd: actualEndDate,
+    dataRanges: Object.entries(dataRanges).map(([code, range]) => ({
+      code,
+      name: names[code] || code,
+      ...range,
+    })),
+  };
+  
+  if (actualStartDate > config.startDate) {
+    const limitingCodes = Object.entries(dataRanges)
+      .filter(([_, range]) => range.start === actualStartDate)
+      .map(([code]) => names[code] || code);
+    if (limitingCodes.length > 0) {
+      dataInfo.warning = `由于部分股票数据起始日期较晚，实际回测从${actualStartDate}开始`;
+    }
+  }
+  
+  let result: BacktestResult;
+  
   switch (config.strategy) {
     case 'etf_rotation':
-      return runETFRotationBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runETFRotationBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     case 'large_cap_low_drawdown':
-      return runLargeCapLowDrawdownBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runLargeCapLowDrawdownBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate, onProgress);
+      break;
     case 'dual_ma':
-      return runDualMABacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runDualMABacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     case 'rsi':
-      return runRSIBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runRSIBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     case 'macd':
-      return runMACDBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runMACDBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     case 'bollinger':
-      return runBollingerBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runBollingerBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     case 'grid':
-      return runGridBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runGridBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      break;
     default:
-      return runSimpleBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runSimpleBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
   }
+  
+  return {
+    ...result,
+    dataInfo,
+  };
 }
 
 export function runBacktest(config: BacktestConfig): BacktestResult {
@@ -912,7 +1100,8 @@ function runLargeCapLowDrawdownBacktest(
   dates: string[],
   names: Record<string, string>,
   actualStartDate: string,
-  actualEndDate: string
+  actualEndDate: string,
+  onProgress?: (update: BacktestProgressUpdate) => void
 ): BacktestResult {
   const maxPositions = (config.parameters?.max_positions as number) || 3;
   const stopLossRatio = (config.parameters?.stop_loss_ratio as number) || 0.05;
@@ -949,34 +1138,57 @@ function runLargeCapLowDrawdownBacktest(
     return (maxTotalValue - currentValue) / maxTotalValue;
   }
   
-  function calculateStockScore(code: string, currentIndex: number): number {
+  function calculateStockScoreDetail(code: string, currentIndex: number): StockScoreDetail | null {
     const data = priceData[code];
-    if (!data || currentIndex < 30) return 0;
+    if (!data || currentIndex < 30) return null;
     
     const closes = data.slice(0, currentIndex + 1).map(d => d.price);
-    if (closes.length < 30) return 0;
+    if (closes.length < 30) return null;
     
-    let score = 0;
+    const scores = {
+      momentum5: 0,
+      momentum20: 0,
+      trendStrength: 0,
+      volumeRatio: 0,
+      volatility: 0,
+      marketCap: 0,
+    };
     
     const momentum5 = (closes[closes.length - 1] / closes[closes.length - 6]) - 1;
-    if (momentum5 > 0.05) score += 25;
+    if (momentum5 > 0.05) scores.momentum5 = 25;
+    else if (momentum5 > 0.02) scores.momentum5 = 15;
+    else if (momentum5 > 0) scores.momentum5 = 5;
     
     const momentum20 = (closes[closes.length - 1] / closes[closes.length - 21]) - 1;
-    if (momentum20 > 0.10) score += 20;
+    if (momentum20 > 0.10) scores.momentum20 = 20;
+    else if (momentum20 > 0.05) scores.momentum20 = 12;
+    else if (momentum20 > 0) scores.momentum20 = 5;
     
     const ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
     const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const trendStrength = (ma5 - ma20) / ma20;
-    if (trendStrength > 0.01) score += 25;
+    const trendStrengthRatio = (ma5 - ma20) / ma20;
+    if (trendStrengthRatio > 0.01) scores.trendStrength = 25;
+    else if (trendStrengthRatio > 0.005) scores.trendStrength = 15;
+    else if (trendStrengthRatio > 0) scores.trendStrength = 5;
     
     const returns = [];
     for (let i = 1; i < Math.min(20, closes.length); i++) {
       returns.push((closes[closes.length - i] - closes[closes.length - i - 1]) / closes[closes.length - i - 1]);
     }
-    const volatility = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
-    if (volatility < 0.08) score += 5;
+    const volatilityRatio = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
+    if (volatilityRatio < 0.05) scores.volatility = 10;
+    else if (volatilityRatio < 0.08) scores.volatility = 5;
     
-    return score;
+    const totalScore = scores.momentum5 + scores.momentum20 + scores.trendStrength + scores.volumeRatio + scores.volatility + scores.marketCap;
+    
+    return {
+      code,
+      name: getName(code),
+      scores,
+      totalScore,
+      rank: 0,
+      isSelected: false,
+    };
   }
   
   for (let i = 0; i < dates.length; i++) {
@@ -1078,19 +1290,47 @@ function runLargeCapLowDrawdownBacktest(
       const currentPositions = positions.size;
       
       if (currentPositions < maxPositions) {
-        const scores: { code: string; score: number }[] = [];
+        const scoreDetails: StockScoreDetail[] = [];
         
         for (const code of codes) {
           if (!positions.has(code)) {
-            const score = calculateStockScore(code, i);
-            if (score > 0) {
-              scores.push({ code, score });
+            const detail = calculateStockScoreDetail(code, i);
+            if (detail && detail.totalScore > 0) {
+              scoreDetails.push(detail);
             }
           }
         }
         
-        scores.sort((a, b) => b.score - a.score);
-        const buyCandidates = scores.slice(0, maxPositions - currentPositions);
+        scoreDetails.sort((a, b) => b.totalScore - a.totalScore);
+        scoreDetails.forEach((detail, index) => {
+          detail.rank = index + 1;
+        });
+        
+        const buyCandidates = scoreDetails.slice(0, maxPositions - currentPositions);
+        buyCandidates.forEach(detail => detail.isSelected = true);
+        
+        const dailyResult: DailySelectionResult = {
+          date,
+          marketStatus: drawdownLock 
+            ? (partialUnlock ? 'partial_unlock' : 'drawdown_lock') 
+            : 'normal',
+          candidates: scoreDetails.slice(0, 10),
+          selectedStocks: buyCandidates.map(c => c.code),
+          trades: [],
+          portfolioValue,
+          drawdown: drawdown * 100,
+          cashRatio: (cash / portfolioValue) * 100,
+        };
+        
+        if (onProgress && i % 5 === 0) {
+          onProgress({
+            currentIndex: i,
+            totalDays: dates.length,
+            currentDate: date,
+            percent: Math.round((i / dates.length) * 100),
+            dailyResult,
+          });
+        }
         
         let availableCash = cash;
         if (partialUnlock) {
@@ -1104,9 +1344,10 @@ function runLargeCapLowDrawdownBacktest(
         
         const cashPerStock = buyCandidates.length > 0 ? availableCash / buyCandidates.length * 0.95 : 0;
         
-        for (const { code } of buyCandidates) {
+        for (const candidate of buyCandidates) {
           if (positions.size >= maxPositions) break;
           
+          const code = candidate.code;
           const price = getPriceSafely(priceData, code, i);
           if (price === null || price <= 0) continue;
           
@@ -1133,6 +1374,13 @@ function runLargeCapLowDrawdownBacktest(
               shares,
               amount: buyAmount,
               commission,
+            });
+            
+            dailyResult.trades.push({
+              action: 'buy',
+              code,
+              name: getName(code),
+              reason: `得分排名第${candidate.rank}，总分${candidate.totalScore}分`,
             });
           }
         }

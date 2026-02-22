@@ -126,3 +126,59 @@ async def get_stock_data(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/hs300/stocks", response_model=List[StockInfo])
+async def get_hs300_stocks():
+    """
+    获取沪深300成分股列表
+    
+    返回沪深300指数的成分股代码和名称
+    """
+    try:
+        from ..services.data_source import DataSourceService
+        
+        service = DataSourceService()
+        stocks = service.get_hs300_constituents()
+        return [StockInfo(**stock) for stock in stocks]
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stocks/batch", response_model=List[ETFData])
+async def get_stocks_batch(
+    codes: str = Query(..., description="股票代码列表，逗号分隔"),
+    start_date: str = Query(..., description="开始日期 YYYY-MM-DD"),
+    end_date: str = Query(..., description="结束日期 YYYY-MM-DD")
+):
+    """
+    批量获取股票历史数据
+    
+    - **codes**: 股票代码列表，逗号分隔（最多50个）
+    - **start_date**: 开始日期
+    - **end_date**: 结束日期
+    """
+    try:
+        from ..services.data_source import DataSourceService
+        
+        code_list = [c.strip() for c in codes.split(',') if c.strip()]
+        if len(code_list) > 50:
+            code_list = code_list[:50]
+        
+        service = DataSourceService()
+        results = []
+        
+        for code in code_list:
+            try:
+                data = service.get_stock_history(code, start_date, end_date)
+                stocks = service.search_stocks(code, 1)
+                name = stocks[0].get("name", code) if stocks else code
+                results.append(ETFData(code=code, name=name, data=data))
+            except Exception:
+                pass
+        
+        return results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

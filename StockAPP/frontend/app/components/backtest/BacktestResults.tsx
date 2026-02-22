@@ -1,6 +1,7 @@
 import React from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
+import { AlertTriangle } from 'lucide-react';
 import EquityCurveChart from '../charts/EquityCurveChart';
 import TradeList from '../charts/TradeList';
 import MonthlyHeatmap from '../charts/MonthlyHeatmap';
@@ -14,6 +15,15 @@ interface BacktestResultsProps {
 export default function BacktestResults({ result }: BacktestResultsProps) {
   return (
     <div className="space-y-6">
+      {result.dataInfo?.warning && (
+        <div className="flex items-center gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+          <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+          <div className="text-sm text-yellow-700 dark:text-yellow-300">
+            {result.dataInfo.warning}
+          </div>
+        </div>
+      )}
+      
       <Card>
         <CardHeader>
           <CardTitle>📊 回测结果</CardTitle>

@@ -25,6 +25,22 @@ export interface BacktestResult {
   // 对比数据
   benchmarkEquity?: EquityPoint[]; // 基准曲线
   excessReturn?: number; // 超额收益
+
+  // 数据范围信息
+  dataInfo?: {
+    requestedStart: string;
+    requestedEnd: string;
+    actualStart: string;
+    actualEnd: string;
+    dataRanges: {
+      code: string;
+      name: string;
+      start: string;
+      end: string;
+      count: number;
+    }[];
+    warning?: string;
+  };
 }
 
 export interface EquityPoint {

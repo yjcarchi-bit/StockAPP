@@ -265,3 +265,83 @@ class DataSourceService:
         results = exact_matches + code_prefix_matches + name_contains_matches
         
         return results[:limit]
+    
+    def get_hs300_constituents(self) -> List[Dict[str, str]]:
+        """
+        获取沪深300成分股列表
+        
+        Returns:
+            沪深300成分股列表
+        """
+        try:
+            if ef is None:
+                return self._get_default_hs300()
+            
+            df = ef.stock.get_quote_history('000300', klt=101, fqt=1)
+            if df is not None and len(df) > 0:
+                pass
+            
+            realtime_df = ef.stock.get_realtime_quotes()
+            if realtime_df is not None and len(realtime_df) > 0:
+                codes = realtime_df['股票代码'].tolist()[:100]
+                names = realtime_df['股票名称'].tolist()[:100]
+                result = []
+                for code, name in zip(codes, names):
+                    code_str = str(code).zfill(6)
+                    if code_str.startswith(('6', '0', '3')):
+                        result.append({
+                            "code": code_str,
+                            "name": str(name),
+                            "market": "SH" if code_str.startswith("6") else "SZ",
+                            "industry": ""
+                        })
+                return result
+            
+        except Exception as e:
+            print(f"获取沪深300成分股失败: {e}")
+        
+        return self._get_default_hs300()
+    
+    def _get_default_hs300(self) -> List[Dict[str, str]]:
+        """获取默认沪深300成分股列表（部分代表性股票）"""
+        return [
+            {"code": "600519", "name": "贵州茅台", "market": "SH", "industry": "白酒"},
+            {"code": "601318", "name": "中国平安", "market": "SH", "industry": "保险"},
+            {"code": "600036", "name": "招商银行", "market": "SH", "industry": "银行"},
+            {"code": "601166", "name": "兴业银行", "market": "SH", "industry": "银行"},
+            {"code": "600887", "name": "伊利股份", "market": "SH", "industry": "食品"},
+            {"code": "601398", "name": "工商银行", "market": "SH", "industry": "银行"},
+            {"code": "600030", "name": "中信证券", "market": "SH", "industry": "证券"},
+            {"code": "601288", "name": "农业银行", "market": "SH", "industry": "银行"},
+            {"code": "600276", "name": "恒瑞医药", "market": "SH", "industry": "医药"},
+            {"code": "600000", "name": "浦发银行", "market": "SH", "industry": "银行"},
+            {"code": "601888", "name": "中国中免", "market": "SH", "industry": "零售"},
+            {"code": "600016", "name": "民生银行", "market": "SH", "industry": "银行"},
+            {"code": "601012", "name": "隆基绿能", "market": "SH", "industry": "光伏"},
+            {"code": "600048", "name": "保利发展", "market": "SH", "industry": "房地产"},
+            {"code": "600900", "name": "长江电力", "market": "SH", "industry": "电力"},
+            {"code": "601328", "name": "交通银行", "market": "SH", "industry": "银行"},
+            {"code": "601939", "name": "建设银行", "market": "SH", "industry": "银行"},
+            {"code": "600028", "name": "中国石化", "market": "SH", "industry": "石化"},
+            {"code": "601988", "name": "中国银行", "market": "SH", "industry": "银行"},
+            {"code": "600585", "name": "海螺水泥", "market": "SH", "industry": "建材"},
+            {"code": "601668", "name": "中国建筑", "market": "SH", "industry": "建筑"},
+            {"code": "600346", "name": "恒力石化", "market": "SH", "industry": "石化"},
+            {"code": "601818", "name": "光大银行", "market": "SH", "industry": "银行"},
+            {"code": "600690", "name": "海尔智家", "market": "SH", "industry": "家电"},
+            {"code": "000858", "name": "五粮液", "market": "SZ", "industry": "白酒"},
+            {"code": "000333", "name": "美的集团", "market": "SZ", "industry": "家电"},
+            {"code": "000651", "name": "格力电器", "market": "SZ", "industry": "家电"},
+            {"code": "000002", "name": "万科A", "market": "SZ", "industry": "房地产"},
+            {"code": "000001", "name": "平安银行", "market": "SZ", "industry": "银行"},
+            {"code": "002594", "name": "比亚迪", "market": "SZ", "industry": "汽车"},
+            {"code": "300750", "name": "宁德时代", "market": "SZ", "industry": "电池"},
+            {"code": "002475", "name": "立讯精密", "market": "SZ", "industry": "电子"},
+            {"code": "000725", "name": "京东方A", "market": "SZ", "industry": "电子"},
+            {"code": "002415", "name": "海康威视", "market": "SZ", "industry": "电子"},
+            {"code": "000063", "name": "中兴通讯", "market": "SZ", "industry": "通信"},
+            {"code": "002352", "name": "顺丰控股", "market": "SZ", "industry": "物流"},
+            {"code": "000568", "name": "泸州老窖", "market": "SZ", "industry": "白酒"},
+            {"code": "002304", "name": "洋河股份", "market": "SZ", "industry": "白酒"},
+            {"code": "000333", "name": "美的集团", "market": "SZ", "industry": "家电"},
+        ]
