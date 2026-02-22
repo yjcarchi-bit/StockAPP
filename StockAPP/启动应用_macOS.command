@@ -15,45 +15,40 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 应用目录 (脚本已在 StockAPP 目录内)
+APP_DIR="$SCRIPT_DIR"
+
 # PID 文件路径
 PID_FILE="/tmp/stockapp.pid"
-LOCK_FILE="/tmp/stockapp.lock"
 
-# 检查是否已有实例运行
-check_single_instance() {
-    # 尝试获取锁
-    exec 200>"$LOCK_FILE"
-    flock -n 200
-    if [ $? -ne 0 ]; then
-        echo "⚠️  检测到 StockAPP 已在运行中"
-        echo ""
-        
-        # 尝试读取 PID
-        if [ -f "$PID_FILE" ]; then
-            OLD_PID=$(cat "$PID_FILE")
-            if ps -p "$OLD_PID" > /dev/null 2>&1; then
-                echo "运行中的进程 PID: $OLD_PID"
-                echo ""
-                echo "如需启动新实例，请先关闭现有实例："
-                echo "  kill $OLD_PID"
-                echo ""
-                echo "或直接打开浏览器访问: http://localhost:5173"
-            else
-                echo "进程 $OLD_PID 已不存在，清理残留文件..."
-                rm -f "$PID_FILE"
-                return 0
-            fi
-        else
-            echo "无法获取进程信息，请检查端口占用："
-            echo "  lsof -i:8000"
-            echo "  lsof -i:5173"
-        fi
-        
-        read -p "按回车键退出..."
-        exit 1
+# 停止已有实例
+stop_existing_instance() {
+    local backend_running=0
+    local frontend_running=0
+    
+    # 检查后端端口
+    if lsof -i:8000 > /dev/null 2>&1; then
+        backend_running=1
     fi
     
-    return 0
+    # 检查前端端口
+    if lsof -i:5173 > /dev/null 2>&1; then
+        frontend_running=1
+    fi
+    
+    # 如果有端口被占用，停止旧实例
+    if [ $backend_running -eq 1 ] || [ $frontend_running -eq 1 ]; then
+        echo "检测到已有实例运行，正在停止..."
+        
+        # 停止占用端口的进程
+        lsof -ti:8000 | xargs kill -9 2>/dev/null
+        lsof -ti:5173 | xargs kill -9 2>/dev/null
+        
+        # 等待端口释放
+        sleep 2
+        echo "旧实例已停止"
+        echo ""
+    fi
 }
 
 # 写入 PID 文件
@@ -81,16 +76,12 @@ cleanup() {
     lsof -ti:8000 | xargs kill -9 2>/dev/null
     lsof -ti:5173 | xargs kill -9 2>/dev/null
     
-    # 释放锁
-    flock -u 200 2>/dev/null
-    rm -f "$LOCK_FILE"
-    
     echo "服务已停止"
     exit 0
 }
 
-# 检查单实例
-check_single_instance
+# 停止已有实例
+stop_existing_instance
 
 # 写入当前 PID
 write_pid
@@ -370,16 +361,36 @@ echo ""
 
 # 检查后端依赖
 echo "检查后端依赖..."
-cd "$SCRIPT_DIR/backend"
-$PYTHON_CMD -c "import fastapi" 2>/dev/null
-if [ $? -ne 0 ]; then
+cd "$APP_DIR/backend"
+
+check_backend_deps() {
+    local missing_deps=()
+    
+    for dep in fastapi uvicorn pydantic pandas numpy efinance apscheduler; do
+        $PYTHON_CMD -c "import $dep" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo "缺少以下依赖: ${missing_deps[*]}"
+        return 1
+    fi
+    return 0
+}
+
+if ! check_backend_deps; then
     echo "正在安装后端依赖，请稍候..."
-    $PYTHON_CMD -m pip install -r requirements.txt -q
+    $PYTHON_CMD -m pip install -r requirements.txt --quiet --user
+    echo "后端依赖安装完成"
+else
+    echo "后端依赖已就绪"
 fi
 
 # 检查前端依赖
 echo "检查前端依赖..."
-cd "$SCRIPT_DIR/frontend"
+cd "$APP_DIR/frontend"
 if [ ! -d "node_modules" ]; then
     echo "正在安装前端依赖，请稍候..."
     npm install
@@ -396,7 +407,7 @@ sleep 1
 
 # 启动后端
 echo "正在启动后端服务..."
-cd "$SCRIPT_DIR/backend"
+cd "$APP_DIR/backend"
 $PYTHON_CMD run.py &
 BACKEND_PID=$!
 echo "后端 PID: $BACKEND_PID"
@@ -413,7 +424,7 @@ done
 
 # 启动前端
 echo "正在启动前端服务..."
-cd "$SCRIPT_DIR/frontend"
+cd "$APP_DIR/frontend"
 npm run dev &
 FRONTEND_PID=$!
 echo "前端 PID: $FRONTEND_PID"

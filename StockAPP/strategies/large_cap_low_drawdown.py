@@ -221,6 +221,44 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
         
         self.log(f"策略初始化完成，最大持仓: {self._max_positions}")
     
+    def on_start(self) -> None:
+        """回测开始时调用 - 预初始化RSRS指标"""
+        if not self._use_rsrs_timing:
+            return
+        
+        index_df = self._get_index_data(1500)
+        if index_df is None or len(index_df) < self._rsrs_n:
+            self.log("指数数据不足，无法预初始化RSRS")
+            return
+        
+        highs = index_df["high"].values
+        lows = index_df["low"].values
+        
+        self._rsrs_history = []
+        self._rsrs_r2_history = []
+        
+        for i in range(self._rsrs_n, len(highs)):
+            data_high = highs[i-self._rsrs_n+1:i+1]
+            data_low = lows[i-self._rsrs_n+1:i+1]
+            
+            try:
+                X = np.column_stack([np.ones(len(data_low)), data_low])
+                y = data_high
+                
+                beta = np.linalg.lstsq(X, y, rcond=None)[0][1]
+                
+                y_pred = X[:, 0] * np.linalg.lstsq(X, y, rcond=None)[0][0] + X[:, 1] * beta
+                ss_res = np.sum((y - y_pred) ** 2)
+                ss_tot = np.sum((y - np.mean(y)) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                
+                self._rsrs_history.append(beta)
+                self._rsrs_r2_history.append(r2)
+            except Exception:
+                continue
+        
+        self.log(f"RSRS预初始化完成，共计算 {len(self._rsrs_history)} 个斜率值")
+    
     def _calculate_rsrs(self, highs: np.ndarray, lows: np.ndarray) -> Tuple[float, float, float]:
         """
         计算RSRS指标（阻力支撑相对强度）
@@ -368,8 +406,7 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
             avg20_vol = np.mean(volume[-20:]) if len(volume) >= 20 else volume[-1]
             volume_ratio = volume[-1] / avg20_vol if avg20_vol > 0 else 0
             
-            returns = np.diff(close[-20:]) / close[-21:-1]
-            volatility = np.std(returns) if len(returns) > 0 else 0
+            volatility = np.std(close[-20:]) / close[-1] if close[-1] > 0 else 0
             
             score = 0
             factors = {}
@@ -462,13 +499,23 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
         index_df = self._get_index_data(60)
         if index_df is not None and len(index_df) >= 60:
             close = index_df["close"].values
+            volume = index_df["volume"].values if "volume" in index_df.columns else None
             current_price = close[-1]
             ma20 = np.mean(close[-20:])
             ma60 = np.mean(close[-60:])
             
             dif, dea, _ = self.MACD(close)
+            dif_val = dif[-1] if len(dif) > 0 else 0
+            dea_val = dea[-1] if len(dea) > 0 else 0
+            rsi_values = self.RSI(close)
+            rsi = rsi_values[-1] if len(rsi_values) > 0 else 50
             
-            if current_price < ma60 and dif < dea:
+            vol_ratio = 1.0
+            if volume is not None and len(volume) >= 20:
+                avg_vol = np.mean(volume[-20:])
+                vol_ratio = volume[-1] / avg_vol if avg_vol > 0 else 1.0
+            
+            if current_price < ma60 and dif_val < dea_val:
                 for code in list(self.portfolio.positions.keys()):
                     if self.has_position(code):
                         self.sell_all(code)
@@ -482,7 +529,9 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
             
             is_strong_bull = (
                 current_price > ma20 * self._strong_bull_threshold and 
-                dif > dea and 
+                dif_val > dea_val and 
+                rsi < 80 and 
+                vol_ratio > 1.2 and
                 self._buy_signals
             )
             
@@ -497,15 +546,39 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
                             if amount > 0:
                                 self.buy(top1, price, amount)
                                 self.log(f"强势加仓: {top1}")
+            
+            is_bear = current_price < ma20 and dif_val < dea_val
+            if is_bear and pos_ratio > 0.6:
+                reduce_value = self.total_value * pos_ratio - self.total_value * 0.6
+                if reduce_value > 0:
+                    low_score_positions = [
+                        code for code in self.portfolio.positions.keys()
+                        if code not in self._buy_signals and self.has_position(code)
+                    ]
+                    if not low_score_positions:
+                        low_score_positions = list(self.portfolio.positions.keys())[-1:]
+                    
+                    for code in low_score_positions:
+                        if self.has_position(code):
+                            price = self.get_price(code)
+                            if price > 0:
+                                reduce_shares = int(reduce_value / price / 100) * 100
+                                if reduce_shares > 0:
+                                    pos = self.get_position(code)
+                                    new_amount = max(0, pos.amount - reduce_shares)
+                                    if new_amount < pos.amount:
+                                        self.sell(code, price, pos.amount - new_amount)
+                                        self.log(f"熊市减仓: {code}")
+                                    break
     
     def _check_stop_loss_profit(self) -> None:
         """检查止盈止损"""
         for code in list(self.portfolio.positions.keys()):
             pos = self.get_position(code)
-            if pos.quantity <= 0:
+            if pos.amount <= 0:
                 continue
             
-            profit_ratio = pos.profit_ratio
+            profit_ratio = pos.profit_pct / 100
             
             if profit_ratio >= self._take_profit_ratio:
                 self.sell_all(code)

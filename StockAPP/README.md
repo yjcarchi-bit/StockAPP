@@ -4,58 +4,63 @@
 
 ## 功能特性
 
-- 支持 6 种内置策略
+- 支持 7 种内置策略
 - 多种策略回测、对比和参数优化
+- 实时数据更新和 WebSocket 推送
+- Docker 容器化部署支持
 
 ## 技术栈
 
-- **后端**: Python + FastAPI
-- **前端**: React + TypeScript + Tailwind CSS
-- **数据源**: efinance
+| 层级 | 技术 |
+|------|------|
+| 前端 | React 18 + TypeScript + Tailwind CSS + shadcn/ui + Recharts |
+| 后端 | Python 3.9+ + FastAPI + Uvicorn |
+| 数据源 | efinance (东方财富) |
+| 构建工具 | Vite 6 |
+| 容器化 | Docker + Docker Compose + Nginx |
 
 ## 快速启动
 
-### 方式一：统一启动（推荐）
+### 方式一：本地开发启动（推荐）
 
-**macOS/Linux:**
+**macOS:**
 ```bash
-./start.sh
+双击运行: 启动应用_macOS.command
 ```
 
 **Windows:**
 ```bash
-start.bat
+双击运行: 启动应用_Windows.bat
 ```
 
-### 方式二：分别启动
+### 方式二：Docker 部署
 
-**后端:**
+**macOS:**
 ```bash
-cd backend
-./start.sh        # macOS/Linux
-start.bat         # Windows
+cd docker
+双击运行: 启动Docker环境_macOS.command
 ```
 
-**前端:**
+**Windows:**
 ```bash
-cd frontend
-./start.sh        # macOS/Linux
-start.bat         # Windows
+cd docker
+双击运行: 启动Docker环境_Windows.bat
 ```
 
 ## 访问地址
 
-| 服务 | 地址 |
-|------|------|
-| 前端界面 | http://localhost:5173 |
-| 后端 API | http://localhost:8000 |
-| API 文档 | http://localhost:8000/docs |
+| 服务 | 本地开发 | Docker 部署 |
+|------|----------|-------------|
+| 前端界面 | http://localhost:5173 | http://localhost |
+| 后端 API | http://localhost:8000 | http://localhost:8000 |
+| API 文档 | http://localhost:8000/docs | http://localhost/docs |
 
 ## 内置策略
 
 | 策略 | 类型 | 说明 |
 |------|------|------|
-| ETF轮动策略 | 动量策略 | 基于动量因子的ETF轮动 |
+| ETF轮动策略 | 复合策略 | 基于动量因子的ETF轮动 |
+| 大市值低回撤 | 复合策略 | 六因子打分+RSRS择时+回撤锁定 |
 | 双均线策略 | 趋势跟踪 | 快慢均线交叉 |
 | RSI策略 | 均值回归 | 超买超卖反转 |
 | MACD策略 | 趋势跟踪 | MACD金叉死叉 |
@@ -64,8 +69,37 @@ start.bat         # Windows
 
 ## 环境要求
 
+### 本地开发
 - Python 3.9+
 - Node.js 18+
+
+### Docker 部署
+- Docker Desktop
+
+## 项目结构
+
+```
+StockAPP/
+├── backend/                 # Python FastAPI 后端
+├── frontend/                # React TypeScript 前端
+├── core/                    # 核心回测引擎
+├── config/                  # 配置模块
+├── strategies/              # 策略实现
+├── data/                    # 数据缓存
+├── docker/                  # Docker 相关文件
+├── docs/                    # 文档
+├── 启动应用_macOS.command    # macOS 启动脚本
+└── 启动应用_Windows.bat      # Windows 启动脚本
+```
+
+详细结构请参考 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
+
+## 文档
+
+- [架构设计文档](ARCHITECTURE.md)
+- [项目结构说明](docs/PROJECT_STRUCTURE.md)
+- [UI 设计文档](docs/DESIGN_DOCUMENT.md)
+- [Docker 测试文档](docker/DOCKER_TEST.md)
 
 ## 版本历史
 
