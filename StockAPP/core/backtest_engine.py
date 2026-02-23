@@ -369,7 +369,13 @@ class BacktestEngine:
             self._benchmark_data = df
     
     def _get_trade_dates(self) -> List[datetime]:
-        """获取交易日列表"""
+        """
+        获取交易日列表
+        
+        使用所有数据的并集日期，而不是交集。
+        这样即使某只股票上市较晚，也不会影响回测起始时间。
+        在回测过程中，对于当天没有数据的股票，策略会自动忽略。
+        """
         if not self._data:
             return []
         
@@ -451,12 +457,15 @@ class BacktestEngine:
             
             strategy.set_current_date(trade_date)
             
+            bars = {}
             prices = {}
             for code in self._data.keys():
                 bar = self._get_bar(code, trade_date)
                 if bar is not None:
+                    bars[code] = bar
                     prices[code] = bar.close
-                    strategy.on_bar(bar)
+            
+            strategy.on_trading_day(trade_date, bars)
             
             self._portfolio.record_daily_value(trade_date, prices)
         

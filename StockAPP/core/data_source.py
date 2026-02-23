@@ -27,6 +27,18 @@ try:
 except ImportError:
     raise ImportError("请安装efinance: pip install efinance")
 
+try:
+    import akshare as ak
+    HAS_AKSHARE = True
+except ImportError:
+    HAS_AKSHARE = False
+
+try:
+    import tushare as ts
+    HAS_TUSHARE = True
+except ImportError:
+    HAS_TUSHARE = False
+
 
 @dataclass
 class DataConfig:
@@ -477,3 +489,173 @@ class DataSource:
             "total_size_mb": self.get_cache_size() / (1024 * 1024),
             "expire_hours": self.config.cache_expire_hours,
         }
+    
+    def get_index_components(
+        self,
+        index_code: str = "000300",
+        date: Optional[Union[str, datetime]] = None,
+        use_cache: bool = True,
+        tushare_token: Optional[str] = None
+    ) -> Optional[List[str]]:
+        """
+        获取指数成分股列表
+        
+        Args:
+            index_code: 指数代码 (如 "000300" 沪深300, "000905" 中证500)
+            date: 查询日期，None表示最新成分股
+            use_cache: 是否使用缓存
+            tushare_token: tushare token（获取历史成分股需要）
+            
+        Returns:
+            成分股代码列表
+        """
+        date_str = ""
+        if date is not None:
+            if isinstance(date, datetime):
+                date_str = date.strftime("%Y%m%d")
+            else:
+                date_str = date.replace("-", "").replace("/", "")
+        
+        cache_key = f"index_components_{index_code}_{date_str}"
+        
+        if use_cache:
+            cached = self._load_cache(cache_key)
+            if cached is not None:
+                return cached.tolist() if hasattr(cached, 'tolist') else list(cached)
+        
+        if date is not None and HAS_TUSHARE and tushare_token:
+            try:
+                pro = ts.pro_api(tushare_token)
+                ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
+                df = pro.index_weight(index_code=ts_code, start_date=date_str, end_date=date_str)
+                
+                if df is not None and len(df) > 0:
+                    codes = df['con_code'].str[:6].tolist()
+                    codes = [str(c).zfill(6) for c in codes]
+                    
+                    if use_cache:
+                        self._save_cache(cache_key, pd.Series(codes))
+                    
+                    return codes
+            except Exception as e:
+                print(f"tushare获取{index_code}历史成分股失败: {e}")
+        
+        if HAS_AKSHARE:
+            try:
+                self._rate_limit()
+                df = ak.index_stock_cons_weight_csindex(symbol=index_code)
+                
+                if df is None or len(df) == 0:
+                    return None
+                
+                if '成分券代码' in df.columns:
+                    codes = df['成分券代码'].tolist()
+                elif '股票代码' in df.columns:
+                    codes = df['股票代码'].tolist()
+                elif 'code' in df.columns:
+                    codes = df['code'].tolist()
+                else:
+                    codes = df.iloc[:, 0].tolist()
+                
+                codes = [str(c).zfill(6) for c in codes]
+                
+                if use_cache:
+                    self._save_cache(cache_key, pd.Series(codes))
+                
+                return codes
+                
+            except Exception as e:
+                print(f"akshare获取{index_code}成分股失败: {e}")
+        
+        if not HAS_AKSHARE and not HAS_TUSHARE:
+            print("警告: akshare和tushare都未安装，请运行: pip install akshare 或 pip install tushare")
+        
+        return None
+    
+    def get_index_components_history(
+        self,
+        index_code: str = "000300",
+        start_date: Union[str, datetime] = None,
+        end_date: Union[str, datetime] = None,
+        freq: str = "M",
+        use_cache: bool = True,
+        tushare_token: Optional[str] = None
+    ) -> Dict[str, List[str]]:
+        """
+        获取指数历史成分股（按月或季度）
+        
+        Args:
+            index_code: 指数代码
+            start_date: 开始日期
+            end_date: 结束日期
+            freq: 频率 "M"=月度, "Q"=季度
+            use_cache: 是否使用缓存
+            tushare_token: tushare token（获取历史成分股需要）
+            
+        Returns:
+            字典 {日期字符串: 成分股代码列表}
+        """
+        if start_date is None:
+            start_date = datetime(2020, 1, 1)
+        if end_date is None:
+            end_date = datetime.now()
+        
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, "%Y-%m-%d")
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, "%Y-%m-%d")
+        
+        result = {}
+        
+        if HAS_TUSHARE and tushare_token:
+            try:
+                print(f"使用tushare获取{index_code}历史成分股...")
+                pro = ts.pro_api(tushare_token)
+                ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
+                
+                start_str = start_date.strftime("%Y%m%d")
+                end_str = end_date.strftime("%Y%m%d")
+                
+                df = pro.index_weight(index_code=ts_code, start_date=start_str, end_date=end_str)
+                
+                if df is not None and len(df) > 0:
+                    df['trade_date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d')
+                    
+                    df_sorted = df.sort_values('trade_date')
+                    
+                    if freq == "M":
+                        df['month'] = df['trade_date'].dt.to_period('M')
+                        grouped = df.groupby('month')
+                    elif freq == "Q":
+                        df['quarter'] = df['trade_date'].dt.to_period('Q')
+                        grouped = df.groupby('quarter')
+                    else:
+                        df['month'] = df['trade_date'].dt.to_period('M')
+                        grouped = df.groupby('month')
+                    
+                    for period, group in grouped:
+                        last_date = group['trade_date'].max()
+                        date_str = last_date.strftime("%Y-%m-%d")
+                        codes = group['con_code'].str[:6].tolist()
+                        codes = [str(c).zfill(6) for c in codes]
+                        result[date_str] = codes
+                        
+                        cache_key = f"index_components_{index_code}_{last_date.strftime('%Y%m%d')}"
+                        if use_cache:
+                            self._save_cache(cache_key, pd.Series(codes))
+                    
+                    print(f"  成功获取 {len(result)} 期历史成分股数据")
+                    return result
+                    
+            except Exception as e:
+                print(f"tushare获取历史成分股失败: {e}")
+        
+        print("警告: 未配置tushare token，无法获取历史成分股")
+        print("  请注册tushare账号并获取token: https://tushare.pro/")
+        print("  回测将使用当前成分股，可能存在前视偏差")
+        
+        current_components = self.get_index_components(index_code, None, use_cache, tushare_token)
+        if current_components:
+            result[start_date.strftime("%Y-%m-%d")] = current_components
+        
+        return result

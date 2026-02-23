@@ -1,115 +1,142 @@
-# StockAPP 量化回测平台 v2.0
+# StockAPP
 
-> A股量化策略回测平台 - React + FastAPI 架构
+一个个人使用的简易量化交易程序，由 AI 辅助开发实现。
 
 ## 功能特性
 
-- 支持 7 种内置策略
-- 多种策略回测、对比和参数优化
-- 实时数据更新和 WebSocket 推送
-- Docker 容器化部署支持
+- **策略回测** - 支持多种量化策略的历史数据回测
+- **参数优化** - 策略参数自动优化
+- **策略对比** - 多策略性能对比分析
+- **数据管理** - ETF/股票数据获取与更新
+- **可视化报告** - 资金曲线、月度收益热力图、交易记录等
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| 前端 | React 18 + TypeScript + Tailwind CSS + shadcn/ui + Recharts |
-| 后端 | Python 3.9+ + FastAPI + Uvicorn |
-| 数据源 | efinance (东方财富) |
-| 构建工具 | Vite 6 |
-| 容器化 | Docker + Docker Compose + Nginx |
+### 后端
+- **FastAPI** - 高性能 Python Web 框架
+- **Pandas** - 数据处理与分析
+- **efinance** - 金融数据获取
+- **APScheduler** - 定时任务调度
 
-## 快速启动
-
-### 方式一：本地开发启动（推荐）
-
-**macOS:**
-```bash
-双击运行: StockAPP/启动应用_macOS.command
-```
-
-**Windows:**
-```bash
-双击运行: StockAPP/启动应用_Windows.bat
-```
-
-### 方式二：Docker 部署
-
-**macOS:**
-```bash
-双击运行: StockAPP/启动Docker环境_macOS.command
-```
-
-**Windows:**
-```bash
-双击运行: StockAPP/启动Docker环境_Windows.bat
-```
-
-## 访问地址
-
-| 服务 | 本地开发 | Docker 部署 |
-|------|----------|-------------|
-| 前端界面 | http://localhost:5173 | http://localhost |
-| 后端 API | http://localhost:8000 | http://localhost:8000 |
-| API 文档 | http://localhost:8000/docs | http://localhost/docs |
-
-## 内置策略
-
-| 策略 | 类型 | 说明 |
-|------|------|------|
-| ETF轮动策略 | 复合策略 | 基于动量因子的ETF轮动 |
-| 大市值低回撤 | 复合策略 | 六因子打分+RSRS择时+回撤锁定 |
-| 双均线策略 | 趋势跟踪 | 快慢均线交叉 |
-| RSI策略 | 均值回归 | 超买超卖反转 |
-| MACD策略 | 趋势跟踪 | MACD金叉死叉 |
-| 布林带策略 | 均值回归 | 价格波动带 |
-| 网格交易策略 | 震荡套利 | 区间网格交易 |
-
-## 环境要求
-
-### 本地开发
-- Python 3.9+
-- Node.js 18+
-
-### Docker 部署
-- Docker Desktop
+### 前端
+- **React 18** - UI 框架
+- **TypeScript** - 类型安全
+- **Vite** - 构建工具
+- **Tailwind CSS** - 样式框架
+- **shadcn/ui** - UI 组件库
+- **Recharts** - 图表库
 
 ## 项目结构
 
 ```
 StockAPP/
-├── StockAPP/                        # 主应用目录
-│   ├── backend/                     # Python FastAPI 后端
-│   ├── frontend/                    # React TypeScript 前端
-│   ├── core/                        # 核心回测引擎
-│   ├── config/                      # 配置模块
-│   ├── strategies/                  # 策略实现
-│   ├── data/                        # 数据缓存
-│   ├── docker/                      # Docker 相关文件
-│   ├── docs/                        # 文档
+├── StockAPP/
+│   ├── backend/           # FastAPI 后端
+│   │   ├── app/
+│   │   │   ├── routers/   # API 路由
+│   │   │   ├── services/  # 业务逻辑
+│   │   │   └── models/    # 数据模型
+│   │   └── requirements.txt
 │   │
-│   ├── 启动应用_macOS.command        # macOS 本地启动
-│   ├── 启动应用_Windows.bat          # Windows 本地启动
-│   ├── 启动Docker环境_macOS.command  # macOS Docker 启动
-│   └── 启动Docker环境_Windows.bat    # Windows Docker 启动
+│   ├── frontend/          # React 前端
+│   │   ├── app/
+│   │   │   ├── components/  # UI 组件
+│   │   │   ├── pages/       # 页面
+│   │   │   └── hooks/       # 自定义 Hooks
+│   │   └── package.json
+│   │
+│   ├── core/              # 核心模块
+│   │   ├── backtest_engine.py   # 回测引擎
+│   │   ├── data_source.py       # 数据源
+│   │   ├── optimizer.py         # 参数优化
+│   │   └── strategy_base.py     # 策略基类
+│   │
+│   ├── strategies/        # 策略实现
+│   │   ├── dual_ma.py           # 双均线策略
+│   │   ├── macd_strategy.py     # MACD 策略
+│   │   ├── rsi_strategy.py      # RSI 策略
+│   │   ├── bollinger_strategy.py # 布林带策略
+│   │   ├── etf_rotation.py      # ETF 轮动策略
+│   │   └── grid_strategy.py     # 网格策略
+│   │
+│   ├── config/            # 配置文件
+│   ├── reports/           # 报告生成
+│   └── utils/             # 工具函数
 │
-├── StockAPP_UI_REF/                 # UI 参考代码
-├── StrategyManage/                  # 策略开发目录
-└── README.md                        # 项目说明
+├── StrategyManage/        # 策略管理脚本
+│   ├── strategy1_大市值低回撤/
+│   ├── strategy2_价值选股与RSRS择时/
+│   ├── strategy3_ETF增值/
+│   ├── strategy4_优质小市值周轮动策略/
+│   ├── strategy5_多策略封装模板/
+│   └── strategy6_对探针法因子筛选多模型参数优化/
+│
+└── docs/                  # 文档
 ```
 
-详细结构请参考 [StockAPP/docs/PROJECT_STRUCTURE.md](StockAPP/docs/PROJECT_STRUCTURE.md)
+## 快速开始
 
-## 文档
+### 环境要求
 
-- [架构设计文档](StockAPP/ARCHITECTURE.md)
-- [项目结构说明](StockAPP/docs/PROJECT_STRUCTURE.md)
-- [UI 设计文档](StockAPP/docs/DESIGN_DOCUMENT.md)
-- [Docker 测试文档](StockAPP/docker/DOCKER_TEST.md)
+- Python 3.9+
+- Node.js 18+
 
-## 版本历史
+### 后端启动
 
-| 版本 | 说明 |
-|------|------|
-| v1.0 | Streamlit 单体应用 |
-| v2.0 | React + FastAPI 分离架构 |
+```bash
+cd StockAPP/backend
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+### 前端启动
+
+```bash
+cd StockAPP/frontend
+npm install
+npm run dev
+```
+
+### 一键启动
+
+- **macOS**: 双击 `StockAPP/启动应用_macOS.command`
+- **Windows**: 双击 `StockAPP/启动应用_Windows.bat`
+
+## 内置策略
+
+| 策略 | 类型 | 描述 |
+|------|------|------|
+| 双均线 | 趋势跟踪 | 快慢均线交叉信号 |
+| MACD | 趋势跟踪 | MACD 指标金叉死叉 |
+| RSI | 震荡指标 | RSI 超买超卖信号 |
+| 布林带 | 震荡指标 | 价格突破布林带 |
+| ETF轮动 | 轮动策略 | 多 ETF 动量轮动 |
+| 网格策略 | 震荡策略 | 价格区间网格交易 |
+
+## API 接口
+
+### 回测
+```
+POST /api/backtest/run
+```
+
+### 策略列表
+```
+GET /api/strategies
+```
+
+### ETF 数据
+```
+GET /api/data/etf/list
+GET /api/data/etf/:code
+```
+
+## 开发说明
+
+本项目为个人学习与实践用途，由 AI 辅助开发。仅供学习参考，不构成投资建议。
+
+## License
+
+MIT

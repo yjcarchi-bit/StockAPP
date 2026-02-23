@@ -5,11 +5,11 @@
 """
 
 from .data_source import DataSource
-from .backtest_engine import BacktestEngine, BacktestConfig, BacktestResult
 from .strategy_base import StrategyBase, BarData
 from .indicators import Indicators
 from .portfolio import Portfolio, Position
 from .order import Order, OrderType, OrderStatus
+from .backtest_engine import BacktestEngine, BacktestConfig, BacktestResult
 from .optimizer import ParameterOptimizer, OptimizationResult, get_strategy_param_grid
 
 __all__ = [

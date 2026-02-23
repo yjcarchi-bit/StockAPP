@@ -14,12 +14,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from core import ParameterOptimizer, BacktestConfig
 from strategies import (
     DualMAStrategy, RSIStrategy, ETFRotationStrategy,
-    MACDStrategy, BollingerStrategy, GridTradingStrategy
+    MACDStrategy, BollingerStrategy, GridTradingStrategy,
+    LargeCapLowDrawdownStrategy
 )
 
 
 STRATEGY_MAP = {
     "etf_rotation": ETFRotationStrategy,
+    "large_cap_low_drawdown": LargeCapLowDrawdownStrategy,
     "dual_ma": DualMAStrategy,
     "rsi": RSIStrategy,
     "macd": MACDStrategy,

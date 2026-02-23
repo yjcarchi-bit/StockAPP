@@ -16,11 +16,7 @@
 
 多因子策略:
 - ETF轮动策略 (ETF Rotation)
-- 多ETF轮动策略 (Multi ETF Rotation)
-- 偷鸡摸狗策略 (Steal Dog)
-- 搅屎棍策略 (FMS)
 - 大市值低回撤策略 (Large Cap Low Drawdown)
-- 多策略组合策略 (Multi Strategy Portfolio)
 """
 
 from .simple import (
@@ -33,11 +29,7 @@ from .simple import (
 
 from .multi_factor import (
     ETFRotationStrategy,
-    MultiETFRotationStrategy,
-    StealDogStrategy,
-    FMSStrategy,
     LargeCapLowDrawdownStrategy,
-    MultiStrategyPortfolio,
 )
 
 __all__ = [
@@ -47,9 +39,5 @@ __all__ = [
     "MACDStrategy",
     "GridTradingStrategy",
     "ETFRotationStrategy",
-    "MultiETFRotationStrategy",
-    "StealDogStrategy",
-    "FMSStrategy",
     "LargeCapLowDrawdownStrategy",
-    "MultiStrategyPortfolio",
 ]

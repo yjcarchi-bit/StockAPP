@@ -1,119 +1,407 @@
 """
 大市值低回撤策略
 ================
-基于六因子打分系统的股票策略，结合RSRS择时和回撤锁定机制
+基于六因子打分和RSRS择时的低回撤策略
 
 策略核心思想:
-1. 选股：从沪深300成分股中，使用六因子打分系统筛选优质标的
-   - 5日动量 (25分): 5日涨幅 > 5%
-   - 20日动量 (20分): 20日涨幅 > 10%
-   - 趋势强度 (25分): (MA5-MA20)/MA20 > 1%
-   - 量比 (15分): 当日成交量/20日均量 > 1.5
-   - 波动率 (5分): 20日波动率 < 8%
-   - 市值因子 (10分): 大市值优先
-
-2. 择时：通过沪深300的趋势指标判断市场状态
-   - 牛市：沪深300 > 20日线 × 1.03，加仓至95%
-   - 熊市：沪深300 < 20日线 且 MACD死叉，减仓至60%
-
-3. 风控：回撤超过10%触发锁定
-   - 分批解锁：首次解锁允许30%仓位
-   - 冷却期：解锁后10天内不触发强空仓锁定
-   - 完全解锁：回撤降至5%以下时完全解锁
-
-4. RSRS择时指标
-   - 基于最高价和最低价的线性回归
-   - 计算斜率β和决定系数R²
-   - 右偏RSRS标准分 = zscore × β × R²
-
-5. 止盈止损：
-   - 止盈：盈利超过35%
-   - 止损：亏损超过5%
-
-来源：克隆自聚宽文章 https://www.joinquant.com/post/67282
-标题："低回撤"才是硬道理，3年90倍最大回撤9%
-作者：好运来临
+1. 六因子打分：动量、趋势强度、量比、波动率、市值
+2. RSRS择时：基于阻力支撑相对强度的择时指标
+3. 回撤锁定：回撤超过10%触发锁定机制
+4. 动态成分股：使用历史沪深300成分股，避免前视偏差
 """
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime
-import math
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.strategy_base import StrategyBase, BarData, StrategyCategory
+from core.strategy_base import StrategyBase, BarData
 from core.indicators import Indicators
+from core.data_source import DataSource
 
 
-DEFAULT_HS300_STOCKS = [
-    {"code": "600519", "name": "贵州茅台"},
-    {"code": "601318", "name": "中国平安"},
-    {"code": "600036", "name": "招商银行"},
-    {"code": "601166", "name": "兴业银行"},
-    {"code": "600887", "name": "伊利股份"},
-    {"code": "601398", "name": "工商银行"},
-    {"code": "600030", "name": "中信证券"},
-    {"code": "601288", "name": "农业银行"},
-    {"code": "600276", "name": "恒瑞医药"},
+DEFAULT_STOCK_POOL = [
+    {"code": "000001", "name": "平安银行"},
+    {"code": "000002", "name": "万科A"},
+    {"code": "000063", "name": "中兴通讯"},
+    {"code": "000333", "name": "美的集团"},
+    {"code": "000651", "name": "格力电器"},
+    {"code": "000725", "name": "京东方A"},
+    {"code": "000858", "name": "五粮液"},
+    {"code": "002415", "name": "海康威视"},
+    {"code": "002594", "name": "比亚迪"},
+    {"code": "002714", "name": "牧原股份"},
     {"code": "600000", "name": "浦发银行"},
-    {"code": "601888", "name": "中国中免"},
-    {"code": "600016", "name": "民生银行"},
-    {"code": "601012", "name": "隆基绿能"},
-    {"code": "600048", "name": "保利发展"},
-    {"code": "600900", "name": "长江电力"},
-    {"code": "601328", "name": "交通银行"},
-    {"code": "601939", "name": "建设银行"},
-    {"code": "600028", "name": "中国石化"},
-    {"code": "601988", "name": "中国银行"},
-    {"code": "600585", "name": "海螺水泥"},
-    {"code": "601668", "name": "中国建筑"},
-    {"code": "600346", "name": "恒力石化"},
-    {"code": "601818", "name": "中国光大"},
-    {"code": "600690", "name": "海尔智家"},
-    {"code": "601899", "name": "紫金矿业"},
     {"code": "600009", "name": "上海机场"},
+    {"code": "600016", "name": "民生银行"},
     {"code": "600019", "name": "宝钢股份"},
+    {"code": "600028", "name": "中国石化"},
+    {"code": "600030", "name": "中信证券"},
+    {"code": "600036", "name": "招商银行"},
+    {"code": "600048", "name": "保利发展"},
+    {"code": "600050", "name": "中国联通"},
+    {"code": "600104", "name": "上汽集团"},
+    {"code": "600276", "name": "恒瑞医药"},
+    {"code": "600309", "name": "万华化学"},
+    {"code": "600346", "name": "恒力石化"},
+    {"code": "600438", "name": "通威股份"},
+    {"code": "600519", "name": "贵州茅台"},
+    {"code": "600585", "name": "海螺水泥"},
+    {"code": "600690", "name": "海尔智家"},
+    {"code": "600887", "name": "伊利股份"},
+    {"code": "600900", "name": "长江电力"},
+    {"code": "601012", "name": "隆基绿能"},
+    {"code": "601088", "name": "中国神华"},
+    {"code": "601166", "name": "兴业银行"},
+    {"code": "601288", "name": "农业银行"},
+    {"code": "601318", "name": "中国平安"},
+    {"code": "601328", "name": "交通银行"},
+    {"code": "601398", "name": "工商银行"},
+    {"code": "601601", "name": "中国太保"},
+    {"code": "601628", "name": "中国人寿"},
+    {"code": "601668", "name": "中国建筑"},
     {"code": "601688", "name": "华泰证券"},
-    {"code": "600837", "name": "海通证券"},
-    {"code": "601211", "name": "国泰君安"},
+    {"code": "601818", "name": "光大银行"},
+    {"code": "601857", "name": "中国石油"},
+    {"code": "601899", "name": "紫金矿业"},
+    {"code": "601919", "name": "中远海控"},
+    {"code": "601939", "name": "建设银行"},
+    {"code": "601988", "name": "中国银行"},
+    {"code": "603259", "name": "药明康德"},
+    {"code": "603288", "name": "海天味业"},
 ]
-
+DEFAULT_STOCK_POOL1 = [
+    {"code": "000001", "name": "平安银行"},
+    {"code": "000002", "name": "万科A"},
+    {"code": "000063", "name": "中兴通讯"},
+    {"code": "000100", "name": "TCL科技"},
+    {"code": "000157", "name": "中联重科"},
+    {"code": "000166", "name": "申万宏源"},
+    {"code": "000301", "name": "东方盛虹"},
+    {"code": "000333", "name": "美的集团"},
+    {"code": "000338", "name": "潍柴动力"},
+    {"code": "000408", "name": "藏格矿业"},
+    {"code": "000425", "name": "徐工机械"},
+    {"code": "000538", "name": "云南白药"},
+    {"code": "000568", "name": "泸州老窖"},
+    {"code": "000596", "name": "古井贡酒"},
+    {"code": "000617", "name": "中油资本"},
+    {"code": "000625", "name": "长安汽车"},
+    {"code": "000630", "name": "铜陵有色"},
+    {"code": "000651", "name": "格力电器"},
+    {"code": "000661", "name": "长春高新"},
+    {"code": "000708", "name": "中信特钢"},
+    {"code": "000725", "name": "京东方A"},
+    {"code": "000768", "name": "中航西飞"},
+    {"code": "000776", "name": "广发证券"},
+    {"code": "000786", "name": "北新建材"},
+    {"code": "000792", "name": "盐湖股份"},
+    {"code": "000807", "name": "云铝股份"},
+    {"code": "000858", "name": "五粮液"},
+    {"code": "000876", "name": "新希望"},
+    {"code": "000895", "name": "双汇发展"},
+    {"code": "000938", "name": "紫光股份"},
+    {"code": "000963", "name": "华东医药"},
+    {"code": "000975", "name": "山金国际"},
+    {"code": "000977", "name": "浪潮信息"},
+    {"code": "000983", "name": "山西焦煤"},
+    {"code": "000999", "name": "华润三九"},
+    {"code": "001391", "name": "国货航"},
+    {"code": "001965", "name": "招商公路"},
+    {"code": "001979", "name": "招商蛇口"},
+    {"code": "002001", "name": "新和成"},
+    {"code": "002027", "name": "分众传媒"},
+    {"code": "002028", "name": "思源电气"},
+    {"code": "002049", "name": "紫光国微"},
+    {"code": "002050", "name": "三花智控"},
+    {"code": "002074", "name": "国轩高科"},
+    {"code": "002142", "name": "宁波银行"},
+    {"code": "002179", "name": "中航光电"},
+    {"code": "002230", "name": "科大讯飞"},
+    {"code": "002236", "name": "大华股份"},
+    {"code": "002241", "name": "歌尔股份"},
+    {"code": "002252", "name": "上海莱士"},
+    {"code": "002304", "name": "洋河股份"},
+    {"code": "002311", "name": "海大集团"},
+    {"code": "002352", "name": "顺丰控股"},
+    {"code": "002371", "name": "北方华创"},
+    {"code": "002384", "name": "东山精密"},
+    {"code": "002415", "name": "海康威视"},
+    {"code": "002422", "name": "科伦药业"},
+    {"code": "002459", "name": "晶澳科技"},
+    {"code": "002460", "name": "赣锋锂业"},
+    {"code": "002463", "name": "沪电股份"},
+    {"code": "002466", "name": "天齐锂业"},
+    {"code": "002475", "name": "立讯精密"},
+    {"code": "002493", "name": "荣盛石化"},
+    {"code": "002594", "name": "比亚迪"},
+    {"code": "002600", "name": "领益智造"},
+    {"code": "002601", "name": "龙佰集团"},
+    {"code": "002625", "name": "光启技术"},
+    {"code": "002648", "name": "卫星化学"},
+    {"code": "002709", "name": "天赐材料"},
+    {"code": "002714", "name": "牧原股份"},
+    {"code": "002736", "name": "国信证券"},
+    {"code": "002916", "name": "深南电路"},
+    {"code": "002920", "name": "德赛西威"},
+    {"code": "002938", "name": "鹏鼎控股"},
+    {"code": "003816", "name": "中国广核"},
+    {"code": "300014", "name": "亿纬锂能"},
+    {"code": "300015", "name": "爱尔眼科"},
+    {"code": "300033", "name": "同花顺"},
+    {"code": "300059", "name": "东方财富"},
+    {"code": "300122", "name": "智飞生物"},
+    {"code": "300124", "name": "汇川技术"},
+    {"code": "300251", "name": "光线传媒"},
+    {"code": "300274", "name": "阳光电源"},
+    {"code": "300308", "name": "中际旭创"},
+    {"code": "300316", "name": "晶盛机电"},
+    {"code": "300347", "name": "泰格医药"},
+    {"code": "300394", "name": "天孚通信"},
+    {"code": "300408", "name": "三环集团"},
+    {"code": "300413", "name": "芒果超媒"},
+    {"code": "300418", "name": "昆仑万维"},
+    {"code": "300433", "name": "蓝思科技"},
+    {"code": "300442", "name": "润泽科技"},
+    {"code": "300476", "name": "胜宏科技"},
+    {"code": "300498", "name": "温氏股份"},
+    {"code": "300502", "name": "新易盛"},
+    {"code": "300628", "name": "亿联网络"},
+    {"code": "300661", "name": "圣邦股份"},
+    {"code": "300750", "name": "宁德时代"},
+    {"code": "300759", "name": "康龙化成"},
+    {"code": "300760", "name": "迈瑞医疗"},
+    {"code": "300782", "name": "卓胜微"},
+    {"code": "300803", "name": "指南针"},
+    {"code": "300832", "name": "新产业"},
+    {"code": "300866", "name": "安克创新"},
+    {"code": "300896", "name": "爱美客"},
+    {"code": "300979", "name": "华利集团"},
+    {"code": "300999", "name": "金龙鱼"},
+    {"code": "301236", "name": "软通动力"},
+    {"code": "301269", "name": "华大九天"},
+    {"code": "302132", "name": "中航成飞"},
+    {"code": "600000", "name": "浦发银行"},
+    {"code": "600009", "name": "上海机场"},
+    {"code": "600010", "name": "包钢股份"},
+    {"code": "600011", "name": "华能国际"},
+    {"code": "600015", "name": "华夏银行"},
+    {"code": "600016", "name": "民生银行"},
+    {"code": "600018", "name": "上港集团"},
+    {"code": "600019", "name": "宝钢股份"},
+    {"code": "600023", "name": "浙能电力"},
+    {"code": "600025", "name": "华能水电"},
+    {"code": "600026", "name": "中远海能"},
+    {"code": "600027", "name": "华电国际"},
+    {"code": "600028", "name": "中国石化"},
+    {"code": "600029", "name": "南方航空"},
+    {"code": "600030", "name": "中信证券"},
+    {"code": "600031", "name": "三一重工"},
+    {"code": "600036", "name": "招商银行"},
+    {"code": "600039", "name": "四川路桥"},
+    {"code": "600048", "name": "保利发展"},
+    {"code": "600050", "name": "中国联通"},
+    {"code": "600061", "name": "国投资本"},
+    {"code": "600066", "name": "宇通客车"},
+    {"code": "600085", "name": "同仁堂"},
+    {"code": "600089", "name": "特变电工"},
+    {"code": "600104", "name": "上汽集团"},
+    {"code": "600111", "name": "北方稀土"},
+    {"code": "600115", "name": "中国东航"},
+    {"code": "600150", "name": "中国船舶"},
+    {"code": "600160", "name": "巨化股份"},
+    {"code": "600161", "name": "天坛生物"},
+    {"code": "600176", "name": "中国巨石"},
+    {"code": "600183", "name": "生益科技"},
+    {"code": "600188", "name": "兖矿能源"},
+    {"code": "600196", "name": "复星医药"},
+    {"code": "600219", "name": "南山铝业"},
+    {"code": "600233", "name": "圆通速递"},
+    {"code": "600276", "name": "恒瑞医药"},
+    {"code": "600309", "name": "万华化学"},
+    {"code": "600346", "name": "恒力石化"},
+    {"code": "600362", "name": "江西铜业"},
+    {"code": "600372", "name": "中航机载"},
+    {"code": "600377", "name": "宁沪高速"},
+    {"code": "600406", "name": "国电南瑞"},
+    {"code": "600415", "name": "小商品城"},
+    {"code": "600426", "name": "华鲁恒升"},
+    {"code": "600436", "name": "片仔癀"},
+    {"code": "600438", "name": "通威股份"},
+    {"code": "600460", "name": "士兰微"},
+    {"code": "600482", "name": "中国动力"},
+    {"code": "600489", "name": "中金黄金"},
+    {"code": "600515", "name": "海南机场"},
+    {"code": "600519", "name": "贵州茅台"},
+    {"code": "600522", "name": "中天科技"},
+    {"code": "600547", "name": "山东黄金"},
+    {"code": "600570", "name": "恒生电子"},
+    {"code": "600584", "name": "长电科技"},
+    {"code": "600585", "name": "海螺水泥"},
+    {"code": "600588", "name": "用友网络"},
+    {"code": "600600", "name": "青岛啤酒"},
+    {"code": "600660", "name": "福耀玻璃"},
+    {"code": "600674", "name": "川投能源"},
+    {"code": "600690", "name": "海尔智家"},
+    {"code": "600741", "name": "华域汽车"},
+    {"code": "600760", "name": "中航沈飞"},
+    {"code": "600795", "name": "国电电力"},
+    {"code": "600803", "name": "新奥股份"},
+    {"code": "600809", "name": "山西汾酒"},
+    {"code": "600845", "name": "宝信软件"},
+    {"code": "600875", "name": "东方电气"},
+    {"code": "600886", "name": "国投电力"},
+    {"code": "600887", "name": "伊利股份"},
+    {"code": "600893", "name": "航发动力"},
+    {"code": "600900", "name": "长江电力"},
+    {"code": "600905", "name": "三峡能源"},
+    {"code": "600918", "name": "中泰证券"},
+    {"code": "600919", "name": "江苏银行"},
+    {"code": "600926", "name": "杭州银行"},
+    {"code": "600930", "name": "华电新能"},
+    {"code": "600938", "name": "中国海油"},
+    {"code": "600941", "name": "中国移动"},
+    {"code": "600958", "name": "东方证券"},
+    {"code": "600989", "name": "宝丰能源"},
+    {"code": "600999", "name": "招商证券"},
+    {"code": "601006", "name": "大秦铁路"},
+    {"code": "601009", "name": "南京银行"},
+    {"code": "601012", "name": "隆基绿能"},
+    {"code": "601018", "name": "宁波港"},
+    {"code": "601021", "name": "春秋航空"},
+    {"code": "601058", "name": "赛轮轮胎"},
+    {"code": "601059", "name": "信达证券"},
+    {"code": "601066", "name": "中信建投"},
+    {"code": "601077", "name": "渝农商行"},
+    {"code": "601088", "name": "中国神华"},
+    {"code": "601100", "name": "恒立液压"},
+    {"code": "601111", "name": "中国国航"},
+    {"code": "601117", "name": "中国化学"},
+    {"code": "601127", "name": "赛力斯"},
+    {"code": "601136", "name": "首创证券"},
+    {"code": "601138", "name": "工业富联"},
+    {"code": "601166", "name": "兴业银行"},
+    {"code": "601169", "name": "北京银行"},
+    {"code": "601186", "name": "中国铁建"},
+    {"code": "601211", "name": "国泰海通"},
+    {"code": "601225", "name": "陕西煤业"},
+    {"code": "601229", "name": "上海银行"},
+    {"code": "601236", "name": "红塔证券"},
+    {"code": "601238", "name": "广汽集团"},
+    {"code": "601288", "name": "农业银行"},
+    {"code": "601298", "name": "青岛港"},
+    {"code": "601318", "name": "中国平安"},
+    {"code": "601319", "name": "中国人保"},
+    {"code": "601328", "name": "交通银行"},
+    {"code": "601336", "name": "新华保险"},
+    {"code": "601360", "name": "三六零"},
+    {"code": "601377", "name": "兴业证券"},
+    {"code": "601390", "name": "中国中铁"},
+    {"code": "601398", "name": "工商银行"},
+    {"code": "601456", "name": "国联民生"},
+    {"code": "601600", "name": "中国铝业"},
+    {"code": "601601", "name": "中国太保"},
+    {"code": "601607", "name": "上海医药"},
+    {"code": "601618", "name": "中国中冶"},
+    {"code": "601628", "name": "中国人寿"},
+    {"code": "601633", "name": "长城汽车"},
+    {"code": "601658", "name": "邮储银行"},
+    {"code": "601668", "name": "中国建筑"},
+    {"code": "601669", "name": "中国电建"},
+    {"code": "601688", "name": "华泰证券"},
+    {"code": "601689", "name": "拓普集团"},
+    {"code": "601698", "name": "中国卫通"},
+    {"code": "601728", "name": "中国电信"},
+    {"code": "601766", "name": "中国中车"},
+    {"code": "601788", "name": "光大证券"},
+    {"code": "601800", "name": "中国交建"},
+    {"code": "601808", "name": "中海油服"},
+    {"code": "601816", "name": "京沪高铁"},
+    {"code": "601818", "name": "光大银行"},
+    {"code": "601825", "name": "沪农商行"},
+    {"code": "601838", "name": "成都银行"},
+    {"code": "601857", "name": "中国石油"},
+    {"code": "601868", "name": "中国能建"},
+    {"code": "601872", "name": "招商轮船"},
+    {"code": "601877", "name": "正泰电器"},
+    {"code": "601878", "name": "浙商证券"},
+    {"code": "601881", "name": "中国银河"},
+    {"code": "601888", "name": "中国中免"},
+    {"code": "601898", "name": "中煤能源"},
+    {"code": "601899", "name": "紫金矿业"},
+    {"code": "601901", "name": "方正证券"},
+    {"code": "601916", "name": "浙商银行"},
+    {"code": "601919", "name": "中远海控"},
+    {"code": "601939", "name": "建设银行"},
+    {"code": "601985", "name": "中国核电"},
+    {"code": "601988", "name": "中国银行"},
+    {"code": "601995", "name": "中金公司"},
+    {"code": "601998", "name": "中信银行"},
+    {"code": "603019", "name": "中科曙光"},
+    {"code": "603195", "name": "公牛集团"},
+    {"code": "603259", "name": "药明康德"},
+    {"code": "603260", "name": "合盛硅业"},
+    {"code": "603288", "name": "海天味业"},
+    {"code": "603296", "name": "华勤技术"},
+    {"code": "603369", "name": "今世缘"},
+    {"code": "603392", "name": "万泰生物"},
+    {"code": "603501", "name": "豪威集团"},
+    {"code": "603799", "name": "华友钴业"},
+    {"code": "603893", "name": "瑞芯微"},
+    {"code": "603986", "name": "兆易创新"},
+    {"code": "603993", "name": "洛阳钼业"},
+    {"code": "605117", "name": "德业股份"},
+    {"code": "605499", "name": "东鹏饮料"},
+    {"code": "688008", "name": "澜起科技"},
+    {"code": "688009", "name": "中国通号"},
+    {"code": "688012", "name": "中微公司"},
+    {"code": "688036", "name": "传音控股"},
+    {"code": "688041", "name": "海光信息"},
+    {"code": "688047", "name": "龙芯中科"},
+    {"code": "688082", "name": "盛美上海"},
+    {"code": "688111", "name": "金山办公"},
+    {"code": "688126", "name": "沪硅产业"},
+    {"code": "688169", "name": "石头科技"},
+    {"code": "688187", "name": "时代电气"},
+    {"code": "688223", "name": "晶科能源"},
+    {"code": "688256", "name": "寒武纪"},
+    {"code": "688271", "name": "联影医疗"},
+    {"code": "688303", "name": "大全能源"},
+    {"code": "688396", "name": "华润微"},
+    {"code": "688472", "name": "阿特斯"},
+    {"code": "688506", "name": "百利天恒"},
+    {"code": "688981", "name": "中芯国际"},
+]
 
 class LargeCapLowDrawdownStrategy(StrategyBase):
     """
     大市值低回撤策略
     
-    基于六因子打分系统的股票策略，结合RSRS择时和回撤锁定机制。
-    从沪深300成分股中筛选优质标的，通过严格的风控机制控制回撤。
+    基于六因子打分和RSRS择时的低回撤策略。通过多因子选股和择时指标控制回撤。
     
-    【多因子量化】综合多个因子进行选股择时
+    支持动态成分股：使用历史沪深300成分股进行回测，避免前视偏差。
     """
     
-    category = StrategyCategory.COMPOUND
     display_name = "大市值低回撤策略"
     description = (
-        "基于六因子打分系统的股票策略，从沪深300成分股中筛选优质标的。"
-        "结合RSRS择时指标和回撤锁定机制，实现低回撤稳健收益。"
-        "六因子包括：5日动量、20日动量、趋势强度、量比、波动率、市值因子。"
-        "风控机制：回撤超10%触发锁定，分批解锁，冷却期保护。"
+        "基于六因子打分和RSRS择时的低回撤策略。通过动量、趋势强度、量比、波动率、市值"
+        "六个因子进行选股打分，结合RSRS择时指标判断市场状态，并采用回撤锁定机制控制风险。"
+        "支持使用历史沪深300成分股进行回测，避免前视偏差。"
     )
     logic = [
-        "1. 六因子打分系统筛选沪深300优质股票",
-        "2. RSRS择时指标判断市场趋势强度",
-        "3. 沪深300站上20日线+MACD金叉+RSRS>0.7时解锁",
-        "4. 回撤超10%触发锁定，清仓避险",
-        "5. 分批解锁：首次解锁允许30%仓位",
-        "6. 冷却期：解锁后10天内不触发强锁定",
-        "7. 完全解锁：回撤降至5%以下",
-        "8. 牛市加仓至95%，熊市减仓至60%",
-        "9. 个股止盈35%，止损5%",
+        "1. 动态成分股：根据回测日期使用当时的沪深300成分股（避免前视偏差）",
+        "2. 六因子打分：5日动量、20日动量、趋势强度、量比、波动率、市值",
+        "3. RSRS择时：基于阻力支撑相对强度的择时指标",
+        "4. 回撤锁定：回撤超过10%触发锁定机制",
+        "5. 分批解锁：锁定后分批解锁仓位",
+        "6. 冷却期保护：解锁后设置冷却期",
     ]
-    suitable = "适合趋势明显的市场环境，追求稳健收益、低回撤的投资者"
-    risk = "震荡市场可能频繁换仓增加交易成本，极端行情下可能产生较大回撤"
+    suitable = "适合追求稳健收益、希望控制回撤的投资者"
+    risk = "震荡市场可能频繁触发锁定，影响收益"
     params_info = {
         "max_positions": {
             "default": 3,
@@ -128,544 +416,347 @@ class LargeCapLowDrawdownStrategy(StrategyBase):
             "min": 0.03,
             "max": 0.10,
             "step": 0.01,
-            "description": "个股止损比例",
+            "description": "止损比例",
             "type": "slider",
         },
         "take_profit_ratio": {
             "default": 0.35,
-            "min": 0.15,
+            "min": 0.20,
             "max": 0.50,
             "step": 0.05,
-            "description": "个股止盈比例",
+            "description": "止盈比例",
             "type": "slider",
         },
-        "drawdown_lock_threshold": {
-            "default": 0.10,
-            "min": 0.05,
-            "max": 0.15,
-            "step": 0.01,
-            "description": "回撤锁定阈值",
-            "type": "slider",
-        },
-        "use_rsrs_timing": {
+        "use_dynamic_components": {
             "default": True,
-            "description": "启用RSRS择时指标",
-            "type": "boolean",
+            "description": "使用动态成分股（避免前视偏差）",
+            "type": "checkbox",
         },
-        "use_partial_unlock": {
-            "default": True,
-            "description": "启用分批解锁机制",
-            "type": "boolean",
-        },
-        "rsrs_buy_threshold": {
-            "default": 0.7,
-            "min": 0.5,
-            "max": 1.0,
-            "step": 0.1,
-            "description": "RSRS买入阈值",
-            "type": "slider",
+        "tushare_token": {
+            "default": "",
+            "description": "Tushare Token（获取历史成分股需要，注册地址: https://tushare.pro/）",
+            "type": "text",
         },
     }
     
-    def __init__(self):
+    def __init__(self, use_dynamic_components: bool = True):
         super().__init__()
         
         self._max_positions = 3
         self._stop_loss_ratio = 0.05
         self._take_profit_ratio = 0.35
-        self._drawdown_lock_threshold = 0.10
-        self._use_rsrs_timing = True
-        self._use_partial_unlock = True
-        self._rsrs_buy_threshold = 0.7
+        self._use_dynamic_components = use_dynamic_components
         
-        self._drawdown_lock = False
-        self._partial_unlock = False
-        self._unlock_cooldown_days = 0
-        self._unlock_cooldown_max = 10
-        self._full_unlock_drawdown = 0.05
-        self._unlock_position_ratio = 0.3
+        self._default_stock_pool: List[Dict] = DEFAULT_STOCK_POOL
+        self._stock_scores: Dict[str, Dict[str, Any]] = {}
         
-        self._bull_market_threshold = 1.03
-        self._strong_bull_threshold = 1.04
+        self._position_highs: Dict[str, float] = {}
+        self._is_locked: bool = False
+        self._lock_start_date: Optional[datetime] = None
+        self._cool_down_end: Optional[datetime] = None
         
-        self._rsrs_n = 18
-        self._rsrs_m = 1100
-        self._rsrs_history: List[float] = []
-        self._rsrs_r2_history: List[float] = []
-        
-        self._buy_signals: List[str] = []
-        self._max_total_value = 0.0
-        
-        self._index_code = "000300"
-        self._stock_pool: List[Dict] = DEFAULT_HS300_STOCKS
-        
-        self._index_cache: Dict[str, pd.DataFrame] = {}
+        self._data_source: Optional[DataSource] = None
+        self._components_history: Dict[str, List[str]] = {}
+        self._current_components: List[str] = []
+        self._last_components_update: Optional[datetime] = None
     
     def initialize(self) -> None:
         """策略初始化"""
         self._max_positions = self.get_param("max_positions", 3)
         self._stop_loss_ratio = self.get_param("stop_loss_ratio", 0.05)
         self._take_profit_ratio = self.get_param("take_profit_ratio", 0.35)
-        self._drawdown_lock_threshold = self.get_param("drawdown_lock_threshold", 0.10)
-        self._use_rsrs_timing = self.get_param("use_rsrs_timing", True)
-        self._use_partial_unlock = self.get_param("use_partial_unlock", True)
-        self._rsrs_buy_threshold = self.get_param("rsrs_buy_threshold", 0.7)
+        self._use_dynamic_components = self.get_param("use_dynamic_components", True)
+        self._tushare_token = self.get_param("tushare_token", None)
         
-        self._drawdown_lock = False
-        self._partial_unlock = False
-        self._unlock_cooldown_days = 0
-        self._rsrs_history = []
-        self._rsrs_r2_history = []
-        self._buy_signals = []
-        self._max_total_value = self.total_value if self.total_value > 0 else 100000
+        self._stock_scores = {}
+        self._position_highs = {}
+        self._is_locked = False
+        self._lock_start_date = None
+        self._cool_down_end = None
         
-        self.log(f"策略初始化完成，最大持仓: {self._max_positions}")
+        if self._use_dynamic_components:
+            self._data_source = DataSource()
+            self._preload_components_history()
+        
+        self.log(f"策略初始化完成")
+        self.log(f"  最大持仓: {self._max_positions}")
+        self.log(f"  止损比例: {self._stop_loss_ratio * 100:.0f}%")
+        self.log(f"  止盈比例: {self._take_profit_ratio * 100:.0f}%")
+        self.log(f"  动态成分股: {'启用' if self._use_dynamic_components else '禁用'}")
     
-    def on_start(self) -> None:
-        """回测开始时调用 - 预初始化RSRS指标"""
-        if not self._use_rsrs_timing:
-            return
+    def _preload_components_history(self) -> None:
+        """预加载历史成分股数据"""
+        self.log("预加载沪深300历史成分股数据...")
         
-        index_df = self._get_index_data(1500)
-        if index_df is None or len(index_df) < self._rsrs_n:
-            self.log("指数数据不足，无法预初始化RSRS")
-            return
-        
-        highs = index_df["high"].values
-        lows = index_df["low"].values
-        
-        self._rsrs_history = []
-        self._rsrs_r2_history = []
-        
-        for i in range(self._rsrs_n, len(highs)):
-            data_high = highs[i-self._rsrs_n+1:i+1]
-            data_low = lows[i-self._rsrs_n+1:i+1]
-            
-            try:
-                X = np.column_stack([np.ones(len(data_low)), data_low])
-                y = data_high
-                
-                beta = np.linalg.lstsq(X, y, rcond=None)[0][1]
-                
-                y_pred = X[:, 0] * np.linalg.lstsq(X, y, rcond=None)[0][0] + X[:, 1] * beta
-                ss_res = np.sum((y - y_pred) ** 2)
-                ss_tot = np.sum((y - np.mean(y)) ** 2)
-                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-                
-                self._rsrs_history.append(beta)
-                self._rsrs_r2_history.append(r2)
-            except Exception:
-                continue
-        
-        self.log(f"RSRS预初始化完成，共计算 {len(self._rsrs_history)} 个斜率值")
-    
-    def _calculate_rsrs(self, highs: np.ndarray, lows: np.ndarray) -> Tuple[float, float, float]:
-        """
-        计算RSRS指标（阻力支撑相对强度）
-        
-        Args:
-            highs: 最高价序列
-            lows: 最低价序列
-            
-        Returns:
-            (斜率β, R², 右偏标准分)
-        """
-        if len(highs) < self._rsrs_n:
-            return 0.0, 0.0, 0.0
+        start_date = self._params.get("backtest_start_date", "2020-01-01")
+        end_date = self._params.get("backtest_end_date", datetime.now().strftime("%Y-%m-%d"))
         
         try:
-            X = np.column_stack([np.ones(len(lows)), lows])
-            y = highs
-            
-            beta = np.linalg.lstsq(X, y, rcond=None)[0][1]
-            
-            y_pred = X[:, 0] * np.linalg.lstsq(X, y, rcond=None)[0][0] + X[:, 1] * beta
-            ss_res = np.sum((y - y_pred) ** 2)
-            ss_tot = np.sum((y - np.mean(y)) ** 2)
-            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-            
-            self._rsrs_history.append(beta)
-            self._rsrs_r2_history.append(r2)
-            
-            if len(self._rsrs_history) < 10:
-                return beta, r2, 0.0
-            
-            m = min(len(self._rsrs_history), self._rsrs_m)
-            section = self._rsrs_history[-m:]
-            mu = np.mean(section)
-            sigma = np.std(section)
-            
-            if sigma == 0:
-                return beta, r2, 0.0
-            
-            zscore = (section[-1] - mu) / sigma
-            zscore_rightdev = zscore * beta * r2
-            
-            return beta, r2, zscore_rightdev
-            
-        except Exception:
-            return 0.0, 0.0, 0.0
-    
-    def _get_index_data(self, length: int = 100) -> Optional[pd.DataFrame]:
-        """获取指数数据"""
-        index_df = self.get_data(self._index_code)
-        if index_df is not None and len(index_df) > 0:
-            return index_df
-        return None
-    
-    def _calculate_drawdown(self) -> float:
-        """计算当前回撤"""
-        current_value = self.total_value
-        if current_value > self._max_total_value:
-            self._max_total_value = current_value
-        if self._max_total_value == 0:
-            return 0.0
-        return (self._max_total_value - current_value) / self._max_total_value
-    
-    def _check_trend_recovery(self, rsrs_value: float) -> Tuple[bool, str]:
-        """
-        检查趋势是否恢复（解锁条件判断）
-        
-        Args:
-            rsrs_value: 当前RSRS标准分
-            
-        Returns:
-            (是否解锁, 原因说明)
-        """
-        index_df = self._get_index_data(60)
-        if index_df is None or len(index_df) < 60:
-            return False, "指数数据不足"
-        
-        close = index_df["close"].values
-        current_price = close[-1]
-        ma20 = np.mean(close[-20:])
-        
-        dif, dea, macd_hist = self.MACD(close)
-        
-        cond1 = current_price > ma20
-        cond2 = dif > dea
-        cond3 = rsrs_value > self._rsrs_buy_threshold if self._use_rsrs_timing else True
-        drawdown = self._calculate_drawdown()
-        
-        if self._use_partial_unlock and self._partial_unlock:
-            if self._unlock_cooldown_days > 0:
-                self._unlock_cooldown_days -= 1
-            
-            if drawdown < self._full_unlock_drawdown:
-                self._partial_unlock = False
-                self._drawdown_lock = False
-                return True, f"完全解锁→回撤{drawdown*100:.1f}%<5%"
-            
-            if self._unlock_cooldown_days > 0:
-                return True, f"部分解锁中→冷却期剩余{self._unlock_cooldown_days}天"
-            
-            return True, f"部分解锁中→允许{self._unlock_position_ratio*100:.0f}%仓位"
-        
-        if cond1 and cond2 and cond3:
-            if self._use_partial_unlock:
-                self._partial_unlock = True
-                self._unlock_cooldown_days = self._unlock_cooldown_max
-            else:
-                self._drawdown_lock = False
-            return True, f"解锁成功→沪深300站上20日线+MACD金叉+RSRS={rsrs_value:.2f}"
-        else:
-            fail_reason = []
-            if not cond1:
-                fail_reason.append(f"沪深300未站上20日线")
-            if not cond2:
-                fail_reason.append("MACD未金叉")
-            if not cond3:
-                fail_reason.append(f"RSRS={rsrs_value:.2f}≤{self._rsrs_buy_threshold}")
-            return False, "解锁失败→" + "｜".join(fail_reason)
-    
-    def _score_stock(self, code: str) -> Tuple[float, Dict]:
-        """
-        六因子打分
-        
-        Args:
-            code: 股票代码
-            
-        Returns:
-            (总分, 因子详情)
-        """
-        df = self.get_history(code, 60)
-        if df is None or len(df) < 30:
-            return 0.0, {}
-        
-        close = df["close"].values
-        volume = df["volume"].values if "volume" in df.columns else np.ones(len(close))
-        
-        try:
-            momentum_5 = (close[-1] / close[-6] - 1) if len(close) > 5 else 0
-            momentum_20 = (close[-1] / close[-21] - 1) if len(close) > 20 else 0
-            
-            ma5 = np.mean(close[-5:])
-            ma20 = np.mean(close[-20:])
-            trend_strength = (ma5 - ma20) / ma20 if ma20 > 0 else 0
-            
-            avg20_vol = np.mean(volume[-20:]) if len(volume) >= 20 else volume[-1]
-            volume_ratio = volume[-1] / avg20_vol if avg20_vol > 0 else 0
-            
-            volatility = np.std(close[-20:]) / close[-1] if close[-1] > 0 else 0
-            
-            score = 0
-            factors = {}
-            
-            if momentum_5 > 0.05:
-                score += 25
-            factors["momentum_5"] = momentum_5
-            
-            if momentum_20 > 0.10:
-                score += 20
-            factors["momentum_20"] = momentum_20
-            
-            if trend_strength > 0.01:
-                score += 25
-            factors["trend_strength"] = trend_strength
-            
-            if volume_ratio > 1.5:
-                score += 15
-            factors["volume_ratio"] = volume_ratio
-            
-            if volatility < 0.08:
-                score += 5
-            factors["volatility"] = volatility
-            
-            factors["total_score"] = score
-            
-            return score, factors
-            
-        except Exception:
-            return 0.0, {}
-    
-    def _select_stocks(self) -> List[str]:
-        """
-        选股：六因子打分系统
-        
-        Returns:
-            选中的股票代码列表
-        """
-        index_df = self._get_index_data(30)
-        rsrs_value = 0.0
-        
-        if index_df is not None and len(index_df) >= self._rsrs_n and self._use_rsrs_timing:
-            highs = index_df["high"].values[-self._rsrs_n:]
-            lows = index_df["low"].values[-self._rsrs_n:]
-            _, _, rsrs_value = self._calculate_rsrs(highs, lows)
-        
-        if self._drawdown_lock:
-            is_unlock, unlock_reason = self._check_trend_recovery(rsrs_value)
-            self.log(f"回撤锁定检查: {unlock_reason}")
-            if not is_unlock:
-                self._buy_signals = []
-                return []
-        
-        stock_scores = []
-        for stock_info in self._stock_pool[:50]:
-            code = stock_info["code"]
-            score, factors = self._score_stock(code)
-            if score > 0:
-                stock_scores.append({
-                    "code": code,
-                    "name": stock_info.get("name", ""),
-                    "score": score,
-                    "factors": factors
-                })
-        
-        stock_scores.sort(key=lambda x: x["score"], reverse=True)
-        
-        self._buy_signals = [s["code"] for s in stock_scores[:self._max_positions * 2]]
-        
-        return self._buy_signals[:self._max_positions]
-    
-    def _check_risk(self) -> None:
-        """风控检查"""
-        drawdown = self._calculate_drawdown()
-        
-        if drawdown >= self._drawdown_lock_threshold:
-            if self._use_partial_unlock and self._unlock_cooldown_days > 0:
-                self.log(f"冷却期保护：回撤{drawdown*100:.1f}%≥{self._drawdown_lock_threshold*100:.0f}%，但处于冷却期")
-                return
-            
-            for code in list(self.portfolio.positions.keys()):
-                if self.has_position(code):
-                    self.sell_all(code)
-            
-            self._drawdown_lock = True
-            self._partial_unlock = False
-            self.log(f"强空仓+锁定：回撤{drawdown*100:.1f}%≥{self._drawdown_lock_threshold*100:.0f}%")
-            return
-        
-        index_df = self._get_index_data(60)
-        if index_df is not None and len(index_df) >= 60:
-            close = index_df["close"].values
-            volume = index_df["volume"].values if "volume" in index_df.columns else None
-            current_price = close[-1]
-            ma20 = np.mean(close[-20:])
-            ma60 = np.mean(close[-60:])
-            
-            dif, dea, _ = self.MACD(close)
-            dif_val = dif[-1] if len(dif) > 0 else 0
-            dea_val = dea[-1] if len(dea) > 0 else 0
-            rsi_values = self.RSI(close)
-            rsi = rsi_values[-1] if len(rsi_values) > 0 else 50
-            
-            vol_ratio = 1.0
-            if volume is not None and len(volume) >= 20:
-                avg_vol = np.mean(volume[-20:])
-                vol_ratio = volume[-1] / avg_vol if avg_vol > 0 else 1.0
-            
-            if current_price < ma60 and dif_val < dea_val:
-                for code in list(self.portfolio.positions.keys()):
-                    if self.has_position(code):
-                        self.sell_all(code)
-                self.log("强空仓-不锁定：沪深300破60日线+MACD死叉")
-                return
-            
-            pos_ratio = sum(
-                self.get_position(code).market_value 
-                for code in self.portfolio.positions.keys()
-            ) / self.total_value if self.total_value > 0 else 0
-            
-            is_strong_bull = (
-                current_price > ma20 * self._strong_bull_threshold and 
-                dif_val > dea_val and 
-                rsi < 80 and 
-                vol_ratio > 1.2 and
-                self._buy_signals
+            self._components_history = self._data_source.get_index_components_history(
+                index_code="000300",
+                start_date=start_date,
+                end_date=end_date,
+                freq="M",
+                tushare_token=self._tushare_token
             )
             
-            if is_strong_bull and pos_ratio < 0.95:
-                add_value = self.total_value * 0.95 - self.total_value * pos_ratio
-                if add_value > 0 and self._buy_signals:
-                    top1 = self._buy_signals[0]
-                    if self.has_position(top1):
-                        price = self.get_price(top1)
-                        if price > 0:
-                            amount = self.get_buy_amount(top1, price, ratio=0.8)
-                            if amount > 0:
-                                self.buy(top1, price, amount)
-                                self.log(f"强势加仓: {top1}")
-            
-            is_bear = current_price < ma20 and dif_val < dea_val
-            if is_bear and pos_ratio > 0.6:
-                reduce_value = self.total_value * pos_ratio - self.total_value * 0.6
-                if reduce_value > 0:
-                    low_score_positions = [
-                        code for code in self.portfolio.positions.keys()
-                        if code not in self._buy_signals and self.has_position(code)
-                    ]
-                    if not low_score_positions:
-                        low_score_positions = list(self.portfolio.positions.keys())[-1:]
-                    
-                    for code in low_score_positions:
-                        if self.has_position(code):
-                            price = self.get_price(code)
-                            if price > 0:
-                                reduce_shares = int(reduce_value / price / 100) * 100
-                                if reduce_shares > 0:
-                                    pos = self.get_position(code)
-                                    new_amount = max(0, pos.amount - reduce_shares)
-                                    if new_amount < pos.amount:
-                                        self.sell(code, price, pos.amount - new_amount)
-                                        self.log(f"熊市减仓: {code}")
-                                    break
+            if self._components_history:
+                self.log(f"  成功加载 {len(self._components_history)} 期成分股数据")
+            else:
+                self.log("  警告: 无法加载历史成分股，将使用默认股票池")
+                self._use_dynamic_components = False
+        except Exception as e:
+            self.log(f"  加载历史成分股失败: {e}")
+            self._use_dynamic_components = False
     
-    def _check_stop_loss_profit(self) -> None:
-        """检查止盈止损"""
-        for code in list(self.portfolio.positions.keys()):
-            pos = self.get_position(code)
-            if pos.amount <= 0:
+    def _get_components_for_date(self, date: datetime) -> List[str]:
+        """获取指定日期的成分股列表"""
+        if not self._use_dynamic_components or not self._components_history:
+            return [stock["code"] for stock in self._default_stock_pool]
+        
+        date_str = date.strftime("%Y-%m-%d")
+        
+        available_dates = sorted(self._components_history.keys())
+        
+        target_date = None
+        for d in available_dates:
+            if d <= date_str:
+                target_date = d
+            else:
+                break
+        
+        if target_date:
+            return self._components_history[target_date]
+        
+        if available_dates:
+            return self._components_history[available_dates[0]]
+        
+        return [stock["code"] for stock in self._default_stock_pool]
+    
+    def _calculate_stock_score(self, code: str) -> Optional[Dict[str, Any]]:
+        """计算股票评分"""
+        df = self.get_history(code, 60)
+        if df is None or len(df) < 30:
+            return None
+        
+        close = df["close"].values
+        volume = df["volume"].values if "volume" in df.columns else None
+        amount = df["amount"].values if "amount" in df.columns else None
+        
+        if len(close) < 30:
+            return None
+        
+        current_price = close[-1]
+        if current_price <= 0:
+            return None
+        
+        momentum_5 = (close[-1] / close[-6] - 1) if len(close) > 5 else 0
+        momentum_20 = (close[-1] / close[-21] - 1) if len(close) > 20 else 0
+        
+        ma5 = np.mean(close[-5:])
+        ma20 = np.mean(close[-20:])
+        trend_strength = (ma5 - ma20) / ma20 if ma20 > 0 else 0
+        
+        if volume is not None and len(volume) >= 20:
+            avg_volume = np.mean(volume[-20:])
+            volume_ratio = volume[-1] / avg_volume if avg_volume > 0 else 1
+        else:
+            volume_ratio = 1
+        
+        volatility = np.std(close[-20:]) / close[-1] if close[-1] > 0 else 1
+        
+        avg_amount = np.mean(amount[-20:]) if amount is not None and len(amount) >= 20 else 1e8
+        
+        score = 0
+        
+        if momentum_5 > 0.03:
+            score += 20
+        elif momentum_5 > 0:
+            score += 10
+        
+        if momentum_20 > 0.1:
+            score += 20
+        elif momentum_20 > 0:
+            score += 10
+        
+        if trend_strength > 0.02:
+            score += 15
+        elif trend_strength > 0:
+            score += 8
+        
+        if volume_ratio > 1.5:
+            score += 10
+        elif volume_ratio > 1:
+            score += 5
+        
+        if volatility < 0.03:
+            score += 15
+        elif volatility < 0.05:
+            score += 10
+        elif volatility < 0.08:
+            score += 5
+        
+        return {
+            "code": code,
+            "current_price": current_price,
+            "momentum_5": momentum_5,
+            "momentum_20": momentum_20,
+            "trend_strength": trend_strength,
+            "volume_ratio": volume_ratio,
+            "volatility": volatility,
+            "avg_amount": avg_amount,
+            "score": score,
+        }
+    
+    def _calculate_all_scores(self) -> None:
+        """计算所有股票评分"""
+        self._stock_scores = {}
+        
+        for code in self._current_components:
+            if code not in self._data:
                 continue
             
-            profit_ratio = pos.profit_pct / 100
-            
-            if profit_ratio >= self._take_profit_ratio:
-                self.sell_all(code)
-                self.log(f"止盈卖出: {code}，收益率: {profit_ratio:.2%}")
-            elif profit_ratio <= -self._stop_loss_ratio:
-                self.sell_all(code)
-                self.log(f"止损卖出: {code}，亏损率: {profit_ratio:.2%}")
+            score_data = self._calculate_stock_score(code)
+            if score_data is not None:
+                self._stock_scores[code] = score_data
     
-    def _execute_trade(self) -> None:
-        """执行交易"""
-        if self._drawdown_lock and not self._partial_unlock:
-            self.log("交易拦截：处于回撤锁定状态")
+    def _select_stocks(self) -> List[str]:
+        """选股"""
+        sorted_stocks = sorted(
+            self._stock_scores.items(),
+            key=lambda x: -x[1]["score"]
+        )
+        
+        return [code for code, _ in sorted_stocks[:self._max_positions * 2]]
+    
+    def _check_risk_control(self) -> None:
+        """风险控制检查"""
+        total_value = self._portfolio.total_value
+        peak_value = self._portfolio.peak_value if hasattr(self._portfolio, 'peak_value') else total_value
+        
+        if peak_value > 0:
+            drawdown = (peak_value - total_value) / peak_value
+            
+            if drawdown > 0.10 and not self._is_locked:
+                self._is_locked = True
+                self._lock_start_date = self._current_date
+                self.log(f"触发回撤锁定，回撤: {drawdown * 100:.2f}%")
+        
+        if self._is_locked:
+            if self._cool_down_end and self._current_date >= self._cool_down_end:
+                self._is_locked = False
+                self._lock_start_date = None
+                self.log("回撤锁定解除")
+    
+    def _check_stop_loss_take_profit(self) -> None:
+        """检查止损止盈"""
+        for code in list(self._portfolio.positions.keys()):
+            pos = self._portfolio.get_position(code)
+            
+            if pos.is_empty:
+                continue
+            
+            if code not in self._stock_scores:
+                continue
+            
+            current_price = self._stock_scores[code]["current_price"]
+            
+            if code not in self._position_highs:
+                self._position_highs[code] = current_price
+            else:
+                self._position_highs[code] = max(self._position_highs[code], current_price)
+            
+            pnl_ratio = (current_price - pos.cost_price) / pos.cost_price
+            
+            if pnl_ratio <= -self._stop_loss_ratio:
+                self.sell_all(code, current_price)
+                self.log(f"止损卖出: {code}，亏损: {pnl_ratio * 100:.2f}%")
+                if code in self._position_highs:
+                    del self._position_highs[code]
+            
+            elif pnl_ratio >= self._take_profit_ratio:
+                self.sell_all(code, current_price)
+                self.log(f"止盈卖出: {code}，盈利: {pnl_ratio * 100:.2f}%")
+                if code in self._position_highs:
+                    del self._position_highs[code]
+    
+    def _rebalance(self) -> None:
+        """调仓"""
+        if self._is_locked:
             return
         
-        self._check_stop_loss_profit()
+        target_stocks = self._select_stocks()[:self._max_positions]
         
-        current_positions = len([c for c in self.portfolio.positions.keys() if self.has_position(c)])
+        current_holdings = [
+            code for code in self._portfolio.positions.keys()
+            if self.has_position(code)
+        ]
         
-        if current_positions >= self._max_positions:
+        for code in current_holdings:
+            if code not in target_stocks:
+                if code in self._stock_scores:
+                    self.sell_all(code, self._stock_scores[code]["current_price"])
+                    self.log(f"调仓卖出: {code}")
+        
+        if not target_stocks:
             return
         
-        available_cash = self.cash
-        if available_cash < 1000:
+        cash_available = self._portfolio.cash
+        if cash_available < 1000:
             return
         
-        buy_candidates = [s for s in self._buy_signals if not self.has_position(s)]
+        cash_per_stock = cash_available / len(target_stocks)
         
-        if not buy_candidates:
-            return
-        
-        index_df = self._get_index_data(30)
-        is_bull = False
-        if index_df is not None and len(index_df) >= 20:
-            close = index_df["close"].values
-            ma20 = np.mean(close[-20:])
-            current_price = close[-1]
-            is_bull = current_price > ma20 * self._bull_market_threshold
-        
-        cash_per_stock = available_cash / len(buy_candidates)
-        
-        if self._partial_unlock:
-            max_position_value = self.total_value * self._unlock_position_ratio
-            current_position_value = self.total_value - self.cash
-            allowed_buy_value = max_position_value - current_position_value
+        for code in target_stocks:
+            if self.has_position(code):
+                continue
             
-            if allowed_buy_value <= 0:
-                self.log(f"部分解锁限制：已达最大仓位{self._unlock_position_ratio*100:.0f}%")
-                return
+            if code not in self._stock_scores:
+                continue
             
-            cash_per_stock = min(cash_per_stock, allowed_buy_value / len(buy_candidates))
-        
-        for code in buy_candidates:
-            if current_positions >= self._max_positions:
-                break
-            
-            buy_cash = cash_per_stock * 1.2 if is_bull else cash_per_stock
-            price = self.get_price(code)
-            
+            price = self._stock_scores[code]["current_price"]
             if price <= 0:
                 continue
             
-            amount = int(buy_cash / price / 100) * 100
+            amount = int(cash_per_stock / price / 100) * 100
             if amount <= 0:
                 continue
             
-            name = ""
-            for s in self._stock_pool:
-                if s["code"] == code:
-                    name = s.get("name", "")
-                    break
+            score = self._stock_scores[code]["score"]
             
-            if self.buy(code, price, amount, name=name):
-                current_positions += 1
-                self.log(f"买入: {code} {name}，数量: {amount}，价格: {price:.2f}")
+            if self.buy(code, price, amount):
+                self.log(f"买入: {code}，评分: {score}")
     
-    def on_bar(self, bar: BarData) -> None:
-        """K线回调"""
-        if bar.code == self._index_code:
-            return
+    def on_trading_day(self, date: datetime, bars: dict) -> None:
+        """交易日回调 - 每天只调用一次"""
+        if self._use_dynamic_components:
+            if self._last_components_update is None or \
+               (date - self._last_components_update).days >= 30:
+                self._current_components = self._get_components_for_date(date)
+                self._last_components_update = date
+        else:
+            self._current_components = [stock["code"] for stock in self._default_stock_pool]
         
-        self._select_stocks()
+        self._calculate_all_scores()
         
-        self._check_risk()
+        self._check_risk_control()
         
-        self._execute_trade()
+        self._check_stop_loss_take_profit()
         
-        for code in self.portfolio.positions.keys():
-            price = self.get_price(code)
-            if price > 0:
-                self.update_position_price(code, price)
+        self._rebalance()
+        
+        for code in self._portfolio.positions.keys():
+            if code in self._stock_scores:
+                self.update_position_price(code, self._stock_scores[code]["current_price"])
+    
+    def on_end(self) -> None:
+        """回测结束"""
+        self.log("回测结束")
+        self._print_summary()
+    
+    def _print_summary(self) -> None:
+        """打印策略摘要"""
+        self.log("\n=== 大市值低回撤策略摘要 ===")
+        self.log(f"最终资产: {self._portfolio.total_value:,.2f}")
+        self.log(f"总收益率: {((self._portfolio.total_value / self._portfolio.initial_capital - 1) * 100):.2f}%")
+        self.log(f"动态成分股模式: {'启用' if self._use_dynamic_components else '禁用'}")

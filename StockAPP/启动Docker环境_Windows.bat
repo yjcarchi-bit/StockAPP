@@ -11,8 +11,7 @@ echo.
 
 cd /d "%~dp0"
 
-:: Docker 配置目录 (脚本已在 StockAPP 目录内)
-set DOCKER_DIR=%~dp0docker
+set DOCKER_DIR=%~dp0StockAPP\docker
 
 :: 检查管理员权限
 net session >nul 2>&1

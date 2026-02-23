@@ -17,7 +17,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
 
 interface PriceData {
   date: string;
-  price: number;
+  price: number | null;
 }
 
 interface CodeInfo {
@@ -84,7 +84,15 @@ export interface BacktestDataInfo {
   warning?: string;
 }
 
+export interface BacktestLogUpdate {
+  stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
+  message: string;
+  progress?: number;
+  total?: number;
+}
+
 export type ProgressCallback = (update: BacktestProgressUpdate) => void;
+export type LogCallback = (update: BacktestLogUpdate) => void;
 
 const codeNameMap: Record<string, string> = {};
 
@@ -190,36 +198,41 @@ async function fetchRealData(
 
 function alignDataByDate(priceData: Record<string, PriceData[]>): { 
   alignedData: Record<string, PriceData[]>; 
-  commonDates: string[] 
+  commonDates: string[];
+  dateAvailability: Record<string, Set<string>>;
 } {
   const codes = Object.keys(priceData);
   if (codes.length === 0) {
-    return { alignedData: {}, commonDates: [] };
+    return { alignedData: {}, commonDates: [], dateAvailability: {} };
   }
   
-  const dateSet = new Set<string>();
-  priceData[codes[0]].forEach(d => dateSet.add(d.date));
+  const allDates = new Set<string>();
+  const dateAvailability: Record<string, Set<string>> = {};
   
-  for (let i = 1; i < codes.length; i++) {
-    const codeDates = new Set(priceData[codes[i]].map(d => d.date));
-    dateSet.forEach(date => {
-      if (!codeDates.has(date)) {
-        dateSet.delete(date);
-      }
+  codes.forEach(code => {
+    const codeDates = new Set<string>();
+    priceData[code].forEach(d => {
+      allDates.add(d.date);
+      codeDates.add(d.date);
     });
-  }
+    dateAvailability[code] = codeDates;
+  });
   
-  const commonDates = Array.from(dateSet).sort();
+  const commonDates = Array.from(allDates).sort();
   
   const alignedData: Record<string, PriceData[]> = {};
   codes.forEach(code => {
     const dataMap = new Map(priceData[code].map(d => [d.date, d]));
-    alignedData[code] = commonDates
-      .map(date => dataMap.get(date))
-      .filter((d): d is PriceData => d !== undefined);
+    alignedData[code] = commonDates.map(date => {
+      const existingData = dataMap.get(date);
+      if (existingData) {
+        return existingData;
+      }
+      return { date, price: null };
+    });
   });
   
-  return { alignedData, commonDates };
+  return { alignedData, commonDates, dateAvailability };
 }
 
 function weightedLinearRegression(prices: number[]): { slope: number; rSquared: number } {
@@ -278,21 +291,32 @@ function calculateATR(highs: number[], lows: number[], closes: number[], period:
 
 export async function runBacktestAsync(
   config: BacktestConfig,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  onLog?: LogCallback
 ): Promise<BacktestResult> {
   const isETF = config.strategy === 'etf_rotation';
   const isLargeCapStrategy = config.strategy === 'large_cap_low_drawdown';
+  
+  onLog?.({ stage: 'data_fetch', message: '开始获取历史数据...' });
   
   let rawData: Record<string, PriceData[]>;
   let names: Record<string, string>;
   let dataRanges: Record<string, { start: string; end: string; count: number }>;
   
   if (isLargeCapStrategy) {
+    onLog?.({ stage: 'data_fetch', message: '正在获取沪深300成分股列表...' });
     const hs300Stocks = await fetchHS300Stocks();
     const stockCodes = hs300Stocks.slice(0, 50).map(s => s.code);
     
     hs300Stocks.forEach(s => {
       codeNameMap[s.code] = s.name;
+    });
+    
+    onLog?.({ 
+      stage: 'data_fetch', 
+      message: `正在获取 ${stockCodes.length} 只股票的历史数据...`,
+      progress: 0,
+      total: stockCodes.length
     });
     
     const result = await fetchRealData(stockCodes, config.startDate, config.endDate, false);
@@ -304,25 +328,76 @@ export async function runBacktestAsync(
       }
     });
     dataRanges = result.dataRanges;
+    
+    onLog?.({ 
+      stage: 'data_fetch', 
+      message: `成功获取 ${Object.keys(rawData).length} 只股票的数据`,
+      progress: stockCodes.length,
+      total: stockCodes.length
+    });
   } else {
+    onLog?.({ 
+      stage: 'data_fetch', 
+      message: `正在获取 ${config.etfCodes.length} 只${isETF ? 'ETF' : '股票'}的历史数据...`,
+      progress: 0,
+      total: config.etfCodes.length
+    });
+    
     const result = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
     rawData = result.data;
     names = result.names;
     dataRanges = result.dataRanges;
+    
+    onLog?.({ 
+      stage: 'data_fetch', 
+      message: `成功获取 ${Object.keys(rawData).length} 只${isETF ? 'ETF' : '股票'}的数据`,
+      progress: config.etfCodes.length,
+      total: config.etfCodes.length
+    });
   }
   
   if (Object.keys(rawData).length === 0) {
     return createEmptyResult(config);
   }
   
-  const { alignedData, commonDates } = alignDataByDate(rawData);
+  onLog?.({ stage: 'data_process', message: '正在对齐和过滤日期数据...' });
+  
+  const { alignedData, commonDates, dateAvailability } = alignDataByDate(rawData);
   
   if (commonDates.length === 0) {
     return createEmptyResult(config);
   }
   
-  const actualStartDate = commonDates[0];
-  const actualEndDate = commonDates[commonDates.length - 1];
+  onLog?.({ 
+    stage: 'data_process', 
+    message: `原始数据包含 ${commonDates.length} 个交易日` 
+  });
+  
+  const filteredDates = commonDates.filter(date => 
+    date >= config.startDate && date <= config.endDate
+  );
+  
+  if (filteredDates.length === 0) {
+    return createEmptyResult(config);
+  }
+  
+  const actualStartDate = filteredDates[0];
+  const actualEndDate = filteredDates[filteredDates.length - 1];
+  
+  onLog?.({ 
+    stage: 'data_process', 
+    message: `过滤后回测时间范围: ${actualStartDate} 至 ${actualEndDate}，共 ${filteredDates.length} 个交易日` 
+  });
+  
+  const filteredData: Record<string, PriceData[]> = {};
+  const startIndex = commonDates.indexOf(actualStartDate);
+  const endIndex = commonDates.indexOf(actualEndDate);
+  
+  Object.keys(alignedData).forEach(code => {
+    filteredData[code] = alignedData[code].slice(startIndex, endIndex + 1);
+  });
+  
+  onLog?.({ stage: 'data_process', message: '数据处理完成，开始执行回测...' });
   
   const dataInfo: BacktestDataInfo = {
     requestedStart: config.startDate,
@@ -336,42 +411,37 @@ export async function runBacktestAsync(
     })),
   };
   
-  if (actualStartDate > config.startDate) {
-    const limitingCodes = Object.entries(dataRanges)
-      .filter(([_, range]) => range.start === actualStartDate)
-      .map(([code]) => names[code] || code);
-    if (limitingCodes.length > 0) {
-      dataInfo.warning = `由于部分股票数据起始日期较晚，实际回测从${actualStartDate}开始`;
-    }
-  }
-  
   let result: BacktestResult;
+  
+  onLog?.({ stage: 'backtest', message: '开始执行回测策略...' });
   
   switch (config.strategy) {
     case 'etf_rotation':
-      result = runETFRotationBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runETFRotationBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     case 'large_cap_low_drawdown':
-      result = runLargeCapLowDrawdownBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate, onProgress);
+      result = runLargeCapLowDrawdownBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate, onProgress, onLog);
       break;
     case 'dual_ma':
-      result = runDualMABacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runDualMABacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     case 'rsi':
-      result = runRSIBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runRSIBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     case 'macd':
-      result = runMACDBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runMACDBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     case 'bollinger':
-      result = runBollingerBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runBollingerBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     case 'grid':
-      result = runGridBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runGridBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
       break;
     default:
-      result = runSimpleBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runSimpleBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
   }
+  
+  onLog?.({ stage: 'metrics', message: '正在计算回测指标...' });
   
   return {
     ...result,
@@ -392,7 +462,7 @@ interface Position {
 
 function getPriceSafely(priceData: Record<string, PriceData[]>, code: string, index: number): number | null {
   const data = priceData[code];
-  if (!data || !data[index] || typeof data[index].price !== 'number') {
+  if (!data || !data[index] || data[index].price === null) {
     return null;
   }
   return data[index].price;
@@ -454,16 +524,25 @@ function runETFRotationBacktest(
         const codeData = priceData[code];
         if (!codeData || codeData.length <= i) return;
         
-        const history = codeData.slice(i - lookbackDays, i);
-        if (history.length < lookbackDays) return;
+        const currentPrice = codeData[i].price;
+        if (currentPrice === null) return;
         
-        const prices = history.map(d => d.price);
+        const history = codeData.slice(i - lookbackDays, i);
+        const prices = history.map(d => d.price).filter((p): p is number => p !== null);
+        if (prices.length < lookbackDays) return;
         if (!prices.every(p => typeof p === 'number' && !isNaN(p) && p > 0)) return;
         
         if (i >= 3) {
-          const day1Ratio = codeData[i].price / codeData[i - 1].price;
-          const day2Ratio = codeData[i - 1].price / codeData[i - 2].price;
-          const day3Ratio = codeData[i - 2].price / codeData[i - 3].price;
+          const p0 = codeData[i].price;
+          const p1 = codeData[i - 1].price;
+          const p2 = codeData[i - 2].price;
+          const p3 = codeData[i - 3].price;
+          
+          if (p0 === null || p1 === null || p2 === null || p3 === null) return;
+          
+          const day1Ratio = p0 / p1;
+          const day2Ratio = p1 / p2;
+          const day3Ratio = p2 / p3;
           
           if (Math.min(day1Ratio, day2Ratio, day3Ratio) < lossThreshold) {
             return;
@@ -471,15 +550,18 @@ function runETFRotationBacktest(
         }
         
         if (useShortMomentum && i > shortLookbackDays) {
-          const shortReturn = codeData[i].price / codeData[i - shortLookbackDays].price - 1;
+          const shortPrice = codeData[i - shortLookbackDays].price;
+          if (shortPrice === null) return;
+          const shortReturn = currentPrice / shortPrice - 1;
           if (shortReturn < shortMomentumThreshold) {
             return;
           }
         }
         
         if (useMaFilter && i >= maLongPeriod) {
-          const maShortPrices = codeData.slice(i - maShortPeriod, i).map(d => d.price);
-          const maLongPrices = codeData.slice(i - maLongPeriod, i).map(d => d.price);
+          const maShortPrices = codeData.slice(i - maShortPeriod, i).map(d => d.price).filter((p): p is number => p !== null);
+          const maLongPrices = codeData.slice(i - maLongPeriod, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (maShortPrices.length < maShortPeriod || maLongPrices.length < maLongPeriod) return;
           const maShort = maShortPrices.reduce((a, b) => a + b, 0) / maShortPeriod;
           const maLong = maLongPrices.reduce((a, b) => a + b, 0) / maLongPeriod;
           
@@ -489,11 +571,14 @@ function runETFRotationBacktest(
         }
         
         if (useRsiFilter && i >= rsiPeriod + 5) {
-          const rsiPrices = codeData.slice(i - rsiPeriod - 5, i).map(d => d.price);
+          const rsiPrices = codeData.slice(i - rsiPeriod - 5, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (rsiPrices.length < rsiPeriod + 5) return;
           const rsiValues = calculateRSI(rsiPrices, rsiPeriod);
           if (rsiValues.length > 0 && rsiValues[rsiValues.length - 1] > rsiThreshold) {
-            const ma5 = codeData.slice(i - 5, i).map(d => d.price).reduce((a, b) => a + b, 0) / 5;
-            if (codeData[i].price < ma5) {
+            const ma5Prices = codeData.slice(i - 5, i).map(d => d.price).filter((p): p is number => p !== null);
+            if (ma5Prices.length < 5) return;
+            const ma5 = ma5Prices.reduce((a, b) => a + b, 0) / 5;
+            if (currentPrice < ma5) {
               return;
             }
           }
@@ -507,10 +592,12 @@ function runETFRotationBacktest(
         
         let atr = 0;
         if (useAtrStop && i >= atrPeriod + 1) {
-          const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 1.01);
-          const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 0.99);
-          const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price);
-          atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+          const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 1.01);
+          const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 0.99);
+          const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (histHighs.length >= atrPeriod && histLows.length >= atrPeriod && histCloses.length >= atrPeriod) {
+            atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+          }
         }
         
         scores.push({ code, score, atr });
@@ -588,35 +675,37 @@ function runETFRotationBacktest(
         if (useAtrStop && code !== defensiveEtf) {
           const codeData = priceData[code];
           if (codeData && i >= atrPeriod + 1) {
-            const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 1.01);
-            const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 0.99);
-            const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price);
-            const atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+            const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 1.01);
+            const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 0.99);
+            const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null);
+            if (histHighs.length >= atrPeriod && histLows.length >= atrPeriod && histCloses.length >= atrPeriod) {
+              const atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
             
-            if (atr > 0) {
-              const atrStop = atrTrailingStop 
-                ? pos.highestPrice - atrMultiplier * atr 
-                : pos.costPrice - atrMultiplier * atr;
-              
-              if (price < atrStop) {
-                const sellAmount = pos.shares * price;
-                const commission = sellAmount * COMMISSION_RATE;
-                const stampDuty = sellAmount * STAMP_DUTY_RATE;
+              if (atr > 0) {
+                const atrStop = atrTrailingStop 
+                  ? pos.highestPrice - atrMultiplier * atr 
+                  : pos.costPrice - atrMultiplier * atr;
                 
-                cash += sellAmount - commission - stampDuty;
-                
-                trades.push({
-                  date,
-                  type: 'sell',
-                  code,
-                  name: getName(code),
-                  price,
-                  shares: pos.shares,
-                  amount: sellAmount,
-                  commission,
-                });
-                
-                positions.delete(code);
+                if (price < atrStop) {
+                  const sellAmount = pos.shares * price;
+                  const commission = sellAmount * COMMISSION_RATE;
+                  const stampDuty = sellAmount * STAMP_DUTY_RATE;
+                  
+                  cash += sellAmount - commission - stampDuty;
+                  
+                  trades.push({
+                    date,
+                    type: 'sell',
+                    code,
+                    name: getName(code),
+                    price,
+                    shares: pos.shares,
+                    amount: sellAmount,
+                    commission,
+                  });
+                  
+                  positions.delete(code);
+                }
               }
             }
           }
@@ -1101,7 +1190,8 @@ function runLargeCapLowDrawdownBacktest(
   names: Record<string, string>,
   actualStartDate: string,
   actualEndDate: string,
-  onProgress?: (update: BacktestProgressUpdate) => void
+  onProgress?: (update: BacktestProgressUpdate) => void,
+  onLog?: LogCallback
 ): BacktestResult {
   const maxPositions = (config.parameters?.max_positions as number) || 3;
   const stopLossRatio = (config.parameters?.stop_loss_ratio as number) || 0.05;
@@ -1142,7 +1232,15 @@ function runLargeCapLowDrawdownBacktest(
     const data = priceData[code];
     if (!data || currentIndex < 30) return null;
     
-    const closes = data.slice(0, currentIndex + 1).map(d => d.price);
+    const currentPrice = data[currentIndex]?.price;
+    if (currentPrice === null || currentPrice === undefined) return null;
+    
+    const closes: number[] = [];
+    for (let j = 0; j <= currentIndex; j++) {
+      if (data[j].price !== null) {
+        closes.push(data[j].price);
+      }
+    }
     if (closes.length < 30) return null;
     
     const scores = {
@@ -1193,6 +1291,22 @@ function runLargeCapLowDrawdownBacktest(
   
   for (let i = 0; i < dates.length; i++) {
     const date = dates[i];
+    
+    if (i === 0) {
+      onLog?.({ 
+        stage: 'backtest', 
+        message: `开始回测，共 ${dates.length} 个交易日`,
+        progress: 0,
+        total: dates.length
+      });
+    } else if (i % 500 === 0) {
+      onLog?.({ 
+        stage: 'backtest', 
+        message: `回测进度: ${date} (${Math.round(i / dates.length * 100)}%)`,
+        progress: i,
+        total: dates.length
+      });
+    }
     
     let portfolioValue = cash;
     positions.forEach((pos, code) => {

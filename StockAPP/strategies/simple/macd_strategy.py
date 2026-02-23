@@ -11,12 +11,13 @@ MACD策略
 """
 
 from typing import Optional
+from datetime import datetime
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.strategy_base import StrategyBase, BarData, StrategyCategory
+from core.strategy_base import StrategyBase, BarData
 from core.indicators import Indicators
 
 
@@ -25,11 +26,8 @@ class MACDStrategy(StrategyBase):
     MACD策略
     
     基于异同移动平均线(MACD)的趋势跟踪策略。通过DIF和DEA的交叉捕捉趋势变化。
-    
-    【单因子量化】基于单一因子信号交易
     """
     
-    category = StrategyCategory.SIMPLE
     display_name = "MACD策略"
     description = (
         "基于异同移动平均线(MACD)的趋势跟踪策略。MACD是技术分析中最经典的指标之一，"
@@ -91,14 +89,24 @@ class MACDStrategy(StrategyBase):
     
     def initialize(self) -> None:
         """初始化策略"""
+        self.fast_period = self.get_param("fast_period", self.fast_period)
+        self.slow_period = self.get_param("slow_period", self.slow_period)
+        self.signal_period = self.get_param("signal_period", self.signal_period)
+        self.use_histogram = self.get_param("use_histogram", self.use_histogram)
+        
         self.log(f"初始化MACD策略")
         self.log(f"  快线周期: {self.fast_period}")
         self.log(f"  慢线周期: {self.slow_period}")
         self.log(f"  信号线周期: {self.signal_period}")
         self.log(f"  柱状图确认: {self.use_histogram}")
     
-    def on_bar(self, bar: BarData) -> None:
-        """K线回调"""
+    def on_trading_day(self, date: datetime, bars: dict) -> None:
+        """交易日回调"""
+        for code, bar in bars.items():
+            self._process_bar(bar)
+    
+    def _process_bar(self, bar: BarData) -> None:
+        """处理单个证券"""
         lookback = max(self.fast_period, self.slow_period) + self.signal_period + 5
         closes = self.get_prices(bar.code, lookback)
         

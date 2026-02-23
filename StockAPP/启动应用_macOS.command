@@ -15,7 +15,7 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 应用目录 (脚本已在 StockAPP 目录内)
+# 应用目录（脚本所在目录即为应用根目录）
 APP_DIR="$SCRIPT_DIR"
 
 # PID 文件路径

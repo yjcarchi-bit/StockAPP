@@ -11,13 +11,14 @@
 """
 
 from typing import Optional, Dict, List
+from datetime import datetime
 import numpy as np
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.strategy_base import StrategyBase, BarData, StrategyCategory
+from core.strategy_base import StrategyBase, BarData
 from core.indicators import Indicators
 
 
@@ -26,11 +27,8 @@ class GridTradingStrategy(StrategyBase):
     网格交易策略
     
     在设定价格区间内划分网格，低买高卖赚取震荡收益。
-    
-    【单因子量化】基于单一因子信号交易
     """
     
-    category = StrategyCategory.SIMPLE
     display_name = "网格交易策略"
     description = (
         "在设定价格区间内划分网格，低买高卖赚取震荡收益的自动化交易策略。"
@@ -90,6 +88,12 @@ class GridTradingStrategy(StrategyBase):
     
     def initialize(self) -> None:
         """初始化策略"""
+        self.grid_num = self.get_param("grid_num", self.grid_num)
+        self.grid_range_pct = self.get_param("grid_range_pct", self.grid_range_pct)
+        self.position_per_grid = self.get_param("position_per_grid", self.position_per_grid)
+        self.use_atr_range = self.get_param("use_atr_range", self.use_atr_range)
+        self.atr_period = self.get_param("atr_period", self.atr_period)
+        
         self.log(f"初始化网格交易策略")
         self.log(f"  网格数量: {self.grid_num}")
         self.log(f"  网格范围: {self.grid_range_pct * 100}%")
@@ -149,8 +153,13 @@ class GridTradingStrategy(StrategyBase):
             self._last_grid_idx.pop(code, None)
             self._init_grid(code, current_price, atr)
     
-    def on_bar(self, bar: BarData) -> None:
-        """K线回调"""
+    def on_trading_day(self, date: datetime, bars: dict) -> None:
+        """交易日回调"""
+        for code, bar in bars.items():
+            self._process_bar(bar)
+    
+    def _process_bar(self, bar: BarData) -> None:
+        """处理单个证券"""
         lookback = max(self.atr_period + 5, 30)
         df = self.get_history(bar.code, lookback)
         
@@ -183,8 +192,11 @@ class GridTradingStrategy(StrategyBase):
         if current_idx > last_idx:
             for i in range(last_idx, current_idx):
                 if self.has_position(bar.code):
-                    self.sell(bar.code, current_price, ratio=self.position_per_grid)
-                    self.log(f"网格卖出 {bar.code}, 网格{i}->{i+1}, 价格={current_price:.2f}")
+                    pos = self.get_position(bar.code)
+                    sell_amount = int(pos.amount * self.position_per_grid / 100) * 100
+                    if sell_amount > 0:
+                        self.sell(bar.code, current_price, amount=sell_amount)
+                        self.log(f"网格卖出 {bar.code}, 网格{i}->{i+1}, 价格={current_price:.2f}")
         
         elif current_idx < last_idx:
             for i in range(last_idx, current_idx, -1):

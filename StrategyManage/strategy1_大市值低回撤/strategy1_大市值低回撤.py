@@ -16,22 +16,21 @@ def calculate_macd(close, fastperiod=12, slowperiod=26, signalperiod=9):
     macd = 2 * (dif - dea)
     return dif.iloc[-1], dea.iloc[-1], macd.iloc[-1]
 def calculate_rsi(close, n=14):
-    """修复版：计算RSI指标，返回最后一个RSI数值（单个值）"""
+    """修复版：计算RSI指标，使用标准EMA算法，返回最后一个RSI数值"""
     delta = close.diff()
-    # 分离上涨和下跌幅度
-    gain = (delta.where(delta > 0, 0)).rolling(window=n).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=n).mean()
+    gain = delta.where(delta > 0, 0)
+    loss = (-delta).where(delta < 0, 0)
     
-    # 核心修复1：处理loss=0的除零风险（所有周期上涨，RSI=100）
-    loss = loss.replace(0, np.finfo(float).eps)  # 用极小值替代0，避免除零
-    rs = gain / loss
+    avg_gain = gain.ewm(com=n-1, adjust=False).mean()
+    avg_loss = loss.ewm(com=n-1, adjust=False).mean()
     
-    # 核心修复2：直接计算RSI序列，无需if判断，最后取最新值
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    # 处理极端值（如rs为无穷大时，RSI=100）
+    
+    rsi = rsi.fillna(50)
     rsi = rsi.replace([np.inf, -np.inf], 100)
-    # 确保返回单个数值（最新一期的RSI）
-    return rsi.iloc[-1] if not rsi.empty else 50  # 无数据时返回中性值50
+    
+    return rsi.iloc[-1] if not rsi.empty else 50
 def calculate_account_drawdown(context):
     """计算账户最大回撤，返回回撤比例"""
     total_value = context.portfolio.total_value
@@ -85,17 +84,16 @@ def initialize(context):
     g.stock_pool_limit = 100   # 选股池数量限制
     g.drawdown_lock = False    # 回撤空仓锁定标记
     g.buy_signals = []         # 提前初始化买入信号，避免未定义
-    # 运行函数：保留9点盘前选股 + 新增前一交易日15点收盘选股
-    run_daily(before_market_open, time='09:00')  # 原9点盘前选股
-    run_daily(before_market_open, time='15:00')  # 新增前一交易日15点收盘选股
-    run_daily(trade, time='09:30')
-    run_daily(check_risk, time='14:30')
-    run_daily(print_daily_position_and_profit, time='15:00')
+    g.sold_today = []          # 当天已卖出股票黑名单，防止止盈止损后立即买回
+    # 运行函数：盘前选股 + 盘中交易 + 午后风控 + 收盘日志
+    run_daily(before_market_open, time='09:00')  # 9点盘前选股
+    run_daily(trade, time='09:30')  # 9:30开盘交易
+    run_daily(check_risk, time='14:30')  # 14:30午后风控
+    run_daily(print_daily_position_and_profit, time='15:10')  # 15:10收盘后打印日志
 
 ## 盘前选股【无修改】
 def before_market_open(context):
-    stock_data = pd.DataFrame(columns=['code', 'score', 'momentum_5', 'momentum_20', 
-                                       'trend_strength', 'volatility', 'volume_ratio', 'market_cap'])
+    stock_list = []  # 使用列表收集数据，避免循环中pd.concat
     # 1. 【前移解锁】若处于锁定状态，先判断是否解锁
     if g.drawdown_lock:
         is_unlock, unlock_reason = check_trend_recovery(context)
@@ -137,11 +135,14 @@ def before_market_open(context):
         if trend_strength > 0.01: score += 25
         if volume_ratio > 1.5: score += 15
         if volatility < 0.08: score += 5
-        stock_data = pd.concat([stock_data, pd.Series({
+        stock_list.append({
             'code': stock, 'score': score, 'momentum_5': momentum_5, 'momentum_20': momentum_20,
             'trend_strength': trend_strength, 'volatility': volatility, 'volume_ratio': volume_ratio,
             'market_cap': market_cap
-        }).to_frame().T], ignore_index=True)
+        })
+    # 一次性创建DataFrame，避免O(n²)复杂度
+    stock_data = pd.DataFrame(stock_list) if stock_list else pd.DataFrame(columns=['code', 'score', 'momentum_5', 'momentum_20', 
+                                       'trend_strength', 'volatility', 'volume_ratio', 'market_cap'])
     # 3. 【信号校验】生成信号+主动换股，无信号则用沪深300前3只兜底
     if not stock_data.empty:
         stock_data = stock_data.sort_values('score', ascending=False).reset_index(drop=True)
@@ -162,7 +163,8 @@ def before_market_open(context):
 
 ## 盘中交易【无修改】
 def trade(context):
-    # 若仍锁定，直接返回
+    g.sold_today = []  # 每次交易开始时清空当日卖出黑名单
+    
     if g.drawdown_lock:
         log.info("【交易拦截】仍处于回撤锁定状态，暂停买入")
         return
@@ -179,8 +181,12 @@ def trade(context):
         if profit_ratio >= g.take_profit_ratio or profit_ratio <= -g.stop_loss_ratio:
             order_target(stock, 0)
             log.info(f"【止盈/止损】卖出{stock}，收益率：{profit_ratio:.2%}")
-            current_pos_count -= 1  # 更新持仓数量
-            buy_candidates.append(stock)  # 卖出后可重新买入（若仍在信号中）
+            g.sold_today.append(stock)  # 加入当日卖出黑名单
+    # 止盈止损后重新计算持仓数量（修复持仓计数不准确问题）
+    current_pos = [s for s in context.portfolio.positions if context.portfolio.positions[s].total_amount > 0 and s not in g.sold_today]
+    current_pos_count = len(current_pos)
+    # 过滤掉当天已卖出的股票，防止立即买回
+    buy_candidates = [s for s in buy_candidates if s not in g.sold_today]
     # 2. 买入核心逻辑【放宽门槛+解锁后优先买入】
     # 放宽现金门槛：1000→500；移除原有破60日线拦截（解锁后已判断趋势，避免重复拦截）
     if current_pos_count >= g.max_positions:
@@ -226,7 +232,8 @@ def check_risk(context):
     b_current, b_ma20, b_ma60 = b_close.iloc[-1], b_close.rolling(20).mean().iloc[-1], b_close.rolling(60).mean().iloc[-1]
     b_macd = calculate_macd(b_close)
     b_rsi = calculate_rsi(b_close)
-    b_vol_ratio = b_vol.iloc[-1] / b_vol.rolling(20).mean().iloc[-1] if b_vol.rolling(20).mean().iloc[-1] !=0 else 0
+    b_vol_ma20 = b_vol.rolling(20).mean().iloc[-1]
+    b_vol_ratio = b_vol.iloc[-1] / b_vol_ma20 if pd.notna(b_vol_ma20) and b_vol_ma20 != 0 else 1.0
     is_strong_bull = (b_current > b_ma20 * g.strong_bull_threshold) and (b_macd[0] > b_macd[1]) and (b_rsi < 80) and (b_vol_ratio > 1.2)
     is_bear = (b_current < b_ma20) and (b_macd[0] < b_macd[1])
     # 1. 强空仓条件【优化：仅回撤≥10%才锁定，其他空仓不锁定】
@@ -243,7 +250,7 @@ def check_risk(context):
         log.info(f"【强空仓-不锁定】沪深300破60日线+MACD死叉，清仓所有标的（未锁定）")
         return
     # 2. 强势牛市加仓（无修改）
-    if is_strong_bull and pos_ratio < 0.95 and g.buy_signals and current_pos:
+    if is_strong_bull and pos_ratio < 0.95 and len(g.buy_signals) > 0 and current_pos:
         target_pos = total_value * 0.95
         add_amount = target_pos - pos_value
         if add_amount > 0:
@@ -251,7 +258,7 @@ def check_risk(context):
             if top1 in current_pos:
                 order_value(top1, add_amount * 0.8)
                 log.info(f"【强势加仓】{top1}，加仓金额{add_amount*0.8:.2f}元")
-            if len(g.buy_signals)>=2 and g.buy_signals[1] in current_pos:
+            if len(g.buy_signals) >= 2 and g.buy_signals[1] in current_pos:
                 order_value(g.buy_signals[1], add_amount * 0.2)
                 log.info(f"【强势加仓】{g.buy_signals[1]}，加仓金额{add_amount*0.2:.2f}元")
     # 3. 熊市减仓（无修改）

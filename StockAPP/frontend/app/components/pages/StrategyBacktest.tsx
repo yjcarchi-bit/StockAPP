@@ -52,7 +52,7 @@ export default function StrategyBacktest() {
   const [selectedETFs, setSelectedETFs] = usePersistentState<string[]>('backtest_etfs', DEFAULT_SELECTED_ETFS);
   const [selectedStocks, setSelectedStocks] = usePersistentState<Stock[]>('backtest_stocks', []);
   const [backtestParams, setBacktestParams] = usePersistentState('backtest_params', DEFAULT_BACKTEST_PARAMS);
-  const [strategyParams, setStrategyParams] = usePersistentState<Record<string, any>>('backtest_strategy_params', {});
+  const [allStrategyParams, setAllStrategyParams] = usePersistentState<Record<StrategyType, Record<string, any>>>('backtest_all_strategy_params', {} as Record<StrategyType, Record<string, any>>);
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = usePersistentState<BacktestResult | null>('backtest_result', null);
   const [progress, setProgress] = useState(0);
@@ -67,6 +67,21 @@ export default function StrategyBacktest() {
   const currentStrategy = strategies.find(s => s.id === selectedStrategy)!;
   const isCompoundStrategy = currentStrategy.category === 'compound';
   const isAutoSelectStrategy = selectedStrategy === 'large_cap_low_drawdown';
+  
+  const strategyParams = allStrategyParams[selectedStrategy] || (() => {
+    const defaultParams: Record<string, any> = {};
+    currentStrategy.parameters.forEach(param => {
+      defaultParams[param.key] = param.default;
+    });
+    return defaultParams;
+  })();
+  
+  const setStrategyParams = (params: Record<string, any>) => {
+    setAllStrategyParams(prev => ({
+      ...prev,
+      [selectedStrategy]: params
+    }));
+  };
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -87,12 +102,6 @@ export default function StrategyBacktest() {
   const handleStrategyChange = (strategyId: StrategyType) => {
     setSelectedStrategy(strategyId);
     setIsIntroExpanded(true);
-    const strategy = strategies.find(s => s.id === strategyId)!;
-    const defaultParams: Record<string, any> = {};
-    strategy.parameters.forEach(param => {
-      defaultParams[param.key] = param.default;
-    });
-    setStrategyParams(defaultParams);
     setResult(null);
     clearLogs();
   };
@@ -140,8 +149,8 @@ export default function StrategyBacktest() {
 
       const config = {
         strategy: selectedStrategy,
-        ...backtestParams,
         ...defaultBacktestConfig,
+        ...backtestParams,
         parameters: strategyParams,
         etfCodes: isAutoSelectStrategy 
           ? ['510300']
@@ -152,7 +161,6 @@ export default function StrategyBacktest() {
 
       setProgress(40);
       setProgressText('正在处理数据...');
-      addLog('info', '正在处理数据...');
 
       const handleProgress = (update: {
         currentIndex: number;
@@ -170,13 +178,33 @@ export default function StrategyBacktest() {
         setProgressText(`正在处理: ${update.currentDate}`);
       };
 
-      const backtestResult = await runBacktestAsync(config, isAutoSelectStrategy ? handleProgress : undefined);
-      
-      setProgress(80);
-      setProgressText('正在计算回测指标...');
-      addLog('info', '正在计算回测指标...');
-      await new Promise(resolve => setTimeout(resolve, 200));
+      const handleLog = (update: {
+        stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
+        message: string;
+        progress?: number;
+        total?: number;
+      }) => {
+        const stageNames: Record<string, string> = {
+          'data_fetch': '数据获取',
+          'data_process': '数据处理',
+          'backtest': '回测执行',
+          'metrics': '指标计算',
+        };
+        const prefix = `[${stageNames[update.stage]}] `;
+        addLog('info', prefix + update.message);
+        
+        if (update.progress !== undefined && update.total !== undefined) {
+          const percent = Math.round((update.progress / update.total) * 100);
+          setProgressText(`${update.message} (${percent}%)`);
+        }
+      };
 
+      const backtestResult = await runBacktestAsync(
+        config, 
+        isAutoSelectStrategy ? handleProgress : undefined,
+        handleLog
+      );
+      
       setProgress(100);
       setProgressText('回测完成!');
       addLog('success', '回测完成!');
@@ -357,16 +385,30 @@ export default function StrategyBacktest() {
         </div>
 
         <div className="lg:col-span-3 space-y-6">
-          <div className="flex items-center justify-between p-4 bg-card rounded-lg border">
-            <div className="flex items-center gap-4">
-              <span className="text-4xl">{currentStrategy.icon}</span>
+          <div className="flex items-center justify-between p-5 bg-gradient-to-r from-card via-card to-primary/5 rounded-xl border shadow-sm">
+            <div className="flex items-center gap-5">
+              <div className={`w-16 h-16 rounded-xl flex items-center justify-center text-3xl ${
+                currentStrategy.category === 'compound' 
+                  ? 'bg-purple-500/20' 
+                  : 'bg-primary/20'
+              }`}>
+                {currentStrategy.icon}
+              </div>
               <div>
-                <h2 className="text-xl font-bold">{currentStrategy.name}</h2>
+                <h2 className="text-2xl font-bold">{currentStrategy.name}</h2>
                 {currentStrategy.category === 'compound' && (
-                  <span className="text-sm text-purple-500">多因子量化 - 综合多个因子进行选股择时</span>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
+                    <span className="text-sm text-purple-500 font-medium">多因子量化策略</span>
+                    <span className="text-xs text-muted-foreground">综合多个因子进行选股择时</span>
+                  </div>
                 )}
                 {currentStrategy.category === 'simple' && (
-                  <span className="text-sm text-primary">单因子量化 - 基于单一因子信号交易</span>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="w-2 h-2 bg-primary rounded-full"></span>
+                    <span className="text-sm text-primary font-medium">单因子量化策略</span>
+                    <span className="text-xs text-muted-foreground">基于单一因子信号交易</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -374,7 +416,11 @@ export default function StrategyBacktest() {
               size="lg"
               onClick={handleRunBacktest}
               disabled={isRunning || !canRunBacktest()}
-              className="bg-primary hover:bg-primary/90"
+              className={`${
+                currentStrategy.category === 'compound'
+                  ? 'bg-purple-500 hover:bg-purple-600'
+                  : 'bg-primary hover:bg-primary/90'
+              } shadow-lg`}
             >
               {isRunning ? (
                 <>
@@ -384,7 +430,7 @@ export default function StrategyBacktest() {
               ) : (
                 <>
                   <Play className="mr-2 h-5 w-5" />
-                  🚀 开始回测
+                  开始回测
                 </>
               )}
             </Button>
@@ -505,23 +551,30 @@ export default function StrategyBacktest() {
                 dailyResult={dailyResult}
               />
             ) : (
-              <Card>
+              <Card className="border-primary/50 bg-gradient-to-r from-primary/5 to-transparent">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin text-primary" />
                     回测进度
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="w-full bg-secondary rounded-full h-3 overflow-hidden">
+                  <div className="w-full bg-secondary rounded-full h-4 overflow-hidden shadow-inner">
                     <div 
-                      className="bg-primary h-full rounded-full transition-all duration-300 ease-out"
+                      className="bg-gradient-to-r from-primary to-primary/70 h-full rounded-full transition-all duration-300 ease-out flex items-center justify-end pr-2"
                       style={{ width: `${progress}%` }}
-                    />
+                    >
+                      {progress > 10 && (
+                        <span className="text-xs font-bold text-primary-foreground">{progress}%</span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">{progressText}</span>
-                    <span className="font-medium">{progress}%</span>
+                    <span className="text-muted-foreground flex items-center gap-2">
+                      <span className="w-2 h-2 bg-primary rounded-full animate-pulse"></span>
+                      {progressText}
+                    </span>
+                    <span className="font-medium text-primary">{progress}%</span>
                   </div>
                 </CardContent>
               </Card>
@@ -531,7 +584,15 @@ export default function StrategyBacktest() {
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">📝 回测日志</CardTitle>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <span>📝</span>
+                  回测日志
+                  {isRunning && (
+                    <span className="text-xs px-2 py-0.5 bg-primary/20 text-primary rounded-full animate-pulse">
+                      运行中
+                    </span>
+                  )}
+                </CardTitle>
                 {logs.length > 0 && (
                   <Button variant="ghost" size="sm" onClick={clearLogs}>
                     清空日志
@@ -542,15 +603,18 @@ export default function StrategyBacktest() {
             <CardContent>
               <div 
                 ref={logContainerRef}
-                className="bg-gray-900 dark:bg-gray-950 rounded-lg p-4 h-48 overflow-y-auto font-mono text-sm"
+                className={`bg-gray-900 dark:bg-gray-950 rounded-lg p-4 font-mono text-sm overflow-y-auto transition-all duration-300 ${
+                  isRunning ? 'h-80' : 'h-48'
+                }`}
               >
                 {logs.length === 0 ? (
                   <div className="text-gray-500 text-center py-8">
+                    <div className="text-4xl mb-2">📊</div>
                     点击"开始回测"后，日志将显示在这里
                   </div>
                 ) : (
                   logs.map((log, index) => (
-                    <div key={index} className={`${getLogColor(log.level)} mb-1`}>
+                    <div key={index} className={`${getLogColor(log.level)} mb-1 leading-relaxed`}>
                       <span className="text-gray-500">[{log.time}]</span>{' '}
                       <span>{getLogPrefix(log.level)}</span>{' '}
                       <span>{log.message}</span>

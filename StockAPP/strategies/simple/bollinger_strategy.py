@@ -12,12 +12,13 @@
 """
 
 from typing import Optional
+from datetime import datetime
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.strategy_base import StrategyBase, BarData, StrategyCategory
+from core.strategy_base import StrategyBase, BarData
 from core.indicators import Indicators
 
 
@@ -26,11 +27,8 @@ class BollingerStrategy(StrategyBase):
     布林带策略
     
     基于布林带指标的均值回归策略。利用价格在通道内的波动特性进行交易。
-    
-    【单因子量化】基于单一因子信号交易
     """
     
-    category = StrategyCategory.SIMPLE
     display_name = "布林带策略"
     description = (
         "基于布林带指标的均值回归策略。布林带由三条轨道线组成："
@@ -82,13 +80,22 @@ class BollingerStrategy(StrategyBase):
     
     def initialize(self) -> None:
         """初始化策略"""
+        self.period = self.get_param("period", self.period)
+        self.std_dev = self.get_param("std_dev", self.std_dev)
+        self.use_middle_exit = self.get_param("use_middle_exit", self.use_middle_exit)
+        
         self.log(f"初始化布林带策略")
         self.log(f"  周期: {self.period}")
         self.log(f"  标准差倍数: {self.std_dev}")
         self.log(f"  中轨平仓: {self.use_middle_exit}")
     
-    def on_bar(self, bar: BarData) -> None:
-        """K线回调"""
+    def on_trading_day(self, date: datetime, bars: dict) -> None:
+        """交易日回调"""
+        for code, bar in bars.items():
+            self._process_bar(bar)
+    
+    def _process_bar(self, bar: BarData) -> None:
+        """处理单个证券"""
         closes = self.get_prices(bar.code, self.period + 5)
         
         if len(closes) < self.period + 1:

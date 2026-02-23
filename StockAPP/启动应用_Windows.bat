@@ -11,8 +11,7 @@ echo ==========================================
 echo.
 
 cd /d "%~dp0"
-:: 应用目录 (脚本已在 StockAPP 目录内)
-set APP_DIR=%~dp0
+set APP_DIR=%~dp0StockAPP
 
 :: 停止已有实例
 echo 检查是否有旧实例运行...
