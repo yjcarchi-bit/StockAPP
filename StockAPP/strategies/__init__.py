@@ -3,40 +3,53 @@
 ========
 内置策略实现
 
-包含:
-- ETF轮动策略
-- 双均线策略
+目录结构:
+- simple/: 简单策略（单因子）
+- multi_factor/: 多因子策略（复合策略）
+
+简单策略:
+- 布林带策略 (Bollinger)
+- 双均线策略 (Dual MA)
 - RSI策略
 - MACD策略
-- 布林带策略
-- 网格交易策略
+- 网格交易策略 (Grid Trading)
+
+多因子策略:
+- ETF轮动策略 (ETF Rotation)
+- 多ETF轮动策略 (Multi ETF Rotation)
+- 偷鸡摸狗策略 (Steal Dog)
 - 搅屎棍策略 (FMS)
-- 偷鸡摸狗策略
-- 多ETF轮动策略
-- 多策略组合策略
-- 自定义策略模板
+- 大市值低回撤策略 (Large Cap Low Drawdown)
+- 多策略组合策略 (Multi Strategy Portfolio)
 """
 
-from .etf_rotation import ETFRotationStrategy
-from .dual_ma import DualMAStrategy
-from .rsi_strategy import RSIStrategy
-from .macd_strategy import MACDStrategy
-from .bollinger_strategy import BollingerStrategy
-from .grid_strategy import GridTradingStrategy
-from .fms_strategy import FMSStrategy
-from .steal_dog_strategy import StealDogStrategy
-from .multi_etf_rotation import MultiETFRotationStrategy
-from .multi_strategy_portfolio import MultiStrategyPortfolio
+from .simple import (
+    BollingerStrategy,
+    DualMAStrategy,
+    RSIStrategy,
+    MACDStrategy,
+    GridTradingStrategy,
+)
+
+from .multi_factor import (
+    ETFRotationStrategy,
+    MultiETFRotationStrategy,
+    StealDogStrategy,
+    FMSStrategy,
+    LargeCapLowDrawdownStrategy,
+    MultiStrategyPortfolio,
+)
 
 __all__ = [
-    "ETFRotationStrategy",
+    "BollingerStrategy",
     "DualMAStrategy",
     "RSIStrategy",
     "MACDStrategy",
-    "BollingerStrategy",
     "GridTradingStrategy",
-    "FMSStrategy",
-    "StealDogStrategy",
+    "ETFRotationStrategy",
     "MultiETFRotationStrategy",
+    "StealDogStrategy",
+    "FMSStrategy",
+    "LargeCapLowDrawdownStrategy",
     "MultiStrategyPortfolio",
 ]

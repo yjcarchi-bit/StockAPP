@@ -35,6 +35,10 @@ def _get_strategy_meta(strategy_name: str) -> dict:
         "macd": ("strategies.macd_strategy", "MACDStrategy"),
         "bollinger": ("strategies.bollinger_strategy", "BollingerStrategy"),
         "grid": ("strategies.grid_strategy", "GridTradingStrategy"),
+        "fms": ("strategies.fms_strategy", "FMSStrategy"),
+        "steal_dog": ("strategies.steal_dog_strategy", "StealDogStrategy"),
+        "multi_etf_rotation": ("strategies.multi_etf_rotation", "MultiETFRotationStrategy"),
+        "multi_strategy_portfolio": ("strategies.multi_strategy_portfolio", "MultiStrategyPortfolio"),
     }
     
     if strategy_name not in strategy_map:
@@ -82,6 +86,10 @@ def _get_strategy_type(strategy_name: str) -> str:
         "macd": "趋势跟踪",
         "bollinger": "均值回归",
         "grid": "震荡套利",
+        "fms": "多因子选股",
+        "steal_dog": "动量策略",
+        "multi_etf_rotation": "动量策略",
+        "multi_strategy_portfolio": "组合策略",
     }
     return type_map.get(strategy_name, "其他")
 
@@ -96,11 +104,18 @@ def _get_strategy_icon(strategy_name: str) -> str:
         "macd": "📉",
         "bollinger": "📏",
         "grid": "🔲",
+        "fms": "🎯",
+        "steal_dog": "🐕",
+        "multi_etf_rotation": "🌐",
+        "multi_strategy_portfolio": "📦",
     }
     return icon_map.get(strategy_name, "📊")
 
 
-STRATEGY_NAMES = ["etf_rotation", "large_cap_low_drawdown", "dual_ma", "rsi", "macd", "bollinger", "grid"]
+STRATEGY_NAMES = [
+    "etf_rotation", "large_cap_low_drawdown", "dual_ma", "rsi", "macd", "bollinger", "grid",
+    "fms", "steal_dog", "multi_etf_rotation", "multi_strategy_portfolio"
+]
 
 
 @router.get("", response_model=List[StrategyListItem])

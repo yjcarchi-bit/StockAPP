@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datetime import datetime, timedelta
 from core.backtest_engine import BacktestEngine, BacktestConfig
 from core.data_source import DataSource
-from strategies.multi_strategy_portfolio import MultiStrategyPortfolio
+from strategies.multi_factor.multi_strategy_portfolio import MultiStrategyPortfolio
 
 
 ETF_CODES = [
@@ -129,9 +129,9 @@ def test_single_strategies():
     print("单独测试各子策略")
     print("=" * 60)
     
-    from strategies.fms_strategy import FMSStrategy
-    from strategies.steal_dog_strategy import StealDogStrategy
-    from strategies.multi_etf_rotation import MultiETFRotationStrategy
+    from strategies.multi_factor.fms_strategy import FMSStrategy
+    from strategies.multi_factor.steal_dog_strategy import StealDogStrategy
+    from strategies.multi_factor.multi_etf_rotation import MultiETFRotationStrategy
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=90)

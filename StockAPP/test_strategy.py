@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datetime import datetime, timedelta
 from core.backtest_engine import BacktestEngine, BacktestConfig
 from core.data_source import DataSource
-from strategies.large_cap_low_drawdown import LargeCapLowDrawdownStrategy
+from strategies.multi_factor.large_cap_low_drawdown import LargeCapLowDrawdownStrategy
 
 
 def test_strategy():

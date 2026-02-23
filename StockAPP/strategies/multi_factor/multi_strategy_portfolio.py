@@ -373,17 +373,17 @@ class MultiStrategyPortfolio(StrategyBase):
     
     def _get_fms_class(self):
         """获取搅屎棍策略类"""
-        from strategies.fms_strategy import FMSStrategy
+        from strategies.multi_factor.fms_strategy import FMSStrategy
         return FMSStrategy
     
     def _get_steal_dog_class(self):
         """获取偷鸡摸狗策略类"""
-        from strategies.steal_dog_strategy import StealDogStrategy
+        from strategies.multi_factor.steal_dog_strategy import StealDogStrategy
         return StealDogStrategy
     
     def _get_multi_etf_class(self):
         """获取多ETF轮动策略类"""
-        from strategies.multi_etf_rotation import MultiETFRotationStrategy
+        from strategies.multi_factor.multi_etf_rotation import MultiETFRotationStrategy
         return MultiETFRotationStrategy
     
     def _setup_subportfolios(self) -> None:
