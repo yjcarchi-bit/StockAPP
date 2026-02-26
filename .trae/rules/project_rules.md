@@ -37,5 +37,6 @@
 | `backend/app/services/backtest_engine.py` | `STRATEGY_MAP` 策略映射 |
 | `backend/app/services/optimizer.py` | `STRATEGY_MAP` 策略映射 |
 | `frontend/app/utils/strategyConfig.ts` | `StrategyType`, `strategies` 数组 |
+| `frontend/app/utils/backtestRunner.ts` | 
 
 **策略必须属性:** `display_name`, `description`, `category`, `params_info`, `logic`, `suitable`, `risk`

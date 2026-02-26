@@ -29,12 +29,6 @@ def _get_strategy_meta(strategy_name: str) -> dict:
     """
     strategy_map = {
         "etf_rotation": ("strategies.multi_factor.etf_rotation", "ETFRotationStrategy"),
-        "large_cap_low_drawdown": ("strategies.multi_factor.large_cap_low_drawdown", "LargeCapLowDrawdownStrategy"),
-        "dual_ma": ("strategies.simple.dual_ma", "DualMAStrategy"),
-        "rsi": ("strategies.simple.rsi_strategy", "RSIStrategy"),
-        "macd": ("strategies.simple.macd_strategy", "MACDStrategy"),
-        "bollinger": ("strategies.simple.bollinger_strategy", "BollingerStrategy"),
-        "grid": ("strategies.simple.grid_strategy", "GridTradingStrategy"),
     }
     
     if strategy_name not in strategy_map:
@@ -58,7 +52,7 @@ def _get_strategy_meta(strategy_name: str) -> dict:
         return {
             "name": strategy_name,
             "display_name": getattr(strategy_class, 'display_name', strategy_name),
-            "category": strategy_class.category.value if hasattr(strategy_class, 'category') else "simple",
+            "category": strategy_class.category.value if hasattr(strategy_class, 'category') else "compound",
             "type": _get_strategy_type(strategy_name),
             "icon": _get_strategy_icon(strategy_name),
             "description": getattr(strategy_class, 'description', ''),
@@ -76,12 +70,6 @@ def _get_strategy_type(strategy_name: str) -> str:
     """获取策略类型"""
     type_map = {
         "etf_rotation": "动量策略",
-        "large_cap_low_drawdown": "动量策略",
-        "dual_ma": "趋势跟踪",
-        "rsi": "均值回归",
-        "macd": "趋势跟踪",
-        "bollinger": "均值回归",
-        "grid": "震荡套利",
     }
     return type_map.get(strategy_name, "其他")
 
@@ -90,18 +78,12 @@ def _get_strategy_icon(strategy_name: str) -> str:
     """获取策略图标"""
     icon_map = {
         "etf_rotation": "🔄",
-        "large_cap_low_drawdown": "🛡️",
-        "dual_ma": "📈",
-        "rsi": "📊",
-        "macd": "📉",
-        "bollinger": "📏",
-        "grid": "🔲",
     }
     return icon_map.get(strategy_name, "📊")
 
 
 STRATEGY_NAMES = [
-    "etf_rotation", "large_cap_low_drawdown", "dual_ma", "rsi", "macd", "bollinger", "grid"
+    "etf_rotation",
 ]
 
 

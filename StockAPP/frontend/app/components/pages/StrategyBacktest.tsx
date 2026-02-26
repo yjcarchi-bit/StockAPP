@@ -1,26 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, ChevronRight, Play, FileDown, Layers, Target, Loader2, Download } from 'lucide-react';
+import { ChevronDown, ChevronRight, Play, Loader2, Download } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
-import { strategies, strategiesByCategory, etfPool, defaultBacktestConfig, type StrategyType, type Strategy } from '../../utils/strategyConfig';
+import { strategies, etfPool, defaultBacktestConfig, type StrategyType, type Strategy } from '../../utils/strategyConfig';
 import StrategyIntroPanel from '../backtest/StrategyIntroPanel';
 import BacktestParams from '../backtest/BacktestParams';
 import StrategyParams from '../backtest/StrategyParams';
 import ETFSelector from '../backtest/ETFSelector';
-import StockSelector from '../backtest/StockSelector';
 import BacktestResults from '../backtest/BacktestResults';
-import BacktestProgress from '../backtest/BacktestProgress';
 import { runBacktestAsync } from '../../utils/backtestRunner';
 import type { BacktestResult } from '../../utils/backtestEngine';
-import type { DailySelectionResult } from '../../utils/backtestRunner';
 import { usePersistentState } from '../../hooks';
-
-interface Stock {
-  code: string;
-  name: string;
-  market?: string;
-  industry?: string;
-}
 
 interface LogEntry {
   time: string;
@@ -50,23 +40,16 @@ export default function StrategyBacktest() {
   const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('backtest_strategy', 'etf_rotation');
   const [isIntroExpanded, setIsIntroExpanded] = useState(true);
   const [selectedETFs, setSelectedETFs] = usePersistentState<string[]>('backtest_etfs', DEFAULT_SELECTED_ETFS);
-  const [selectedStocks, setSelectedStocks] = usePersistentState<Stock[]>('backtest_stocks', []);
   const [backtestParams, setBacktestParams] = usePersistentState('backtest_params', DEFAULT_BACKTEST_PARAMS);
   const [allStrategyParams, setAllStrategyParams] = usePersistentState<Record<StrategyType, Record<string, any>>>('backtest_all_strategy_params', {} as Record<StrategyType, Record<string, any>>);
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = usePersistentState<BacktestResult | null>('backtest_result', null);
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('');
-  const [currentDate, setCurrentDate] = useState('');
-  const [totalDays, setTotalDays] = useState(0);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [dailyResult, setDailyResult] = useState<DailySelectionResult | null>(null);
   const [logs, setLogs] = usePersistentState<LogEntry[]>('backtest_logs', []);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const currentStrategy = strategies.find(s => s.id === selectedStrategy)!;
-  const isCompoundStrategy = currentStrategy.category === 'compound';
-  const isAutoSelectStrategy = selectedStrategy === 'large_cap_low_drawdown';
   
   const strategyParams = allStrategyParams[selectedStrategy] || (() => {
     const defaultParams: Record<string, any> = {};
@@ -110,28 +93,16 @@ export default function StrategyBacktest() {
     setIsRunning(true);
     setProgress(0);
     setProgressText('');
-    setDailyResult(null);
     clearLogs();
     setResult(null);
 
     addLog('info', `开始回测策略: ${currentStrategy.name}`);
+    addLog('info', `已选择 ${selectedETFs.length} 只ETF: ${selectedETFs.join(', ')}`);
     
-    if (isAutoSelectStrategy) {
-      addLog('info', '自动选股模式: 将从沪深300成分股中筛选优质标的');
-    } else if (isCompoundStrategy) {
-      addLog('info', `已选择 ${selectedETFs.length} 只ETF: ${selectedETFs.join(', ')}`);
-      if (selectedETFs.length === 0) {
-        addLog('error', '错误: 请至少选择一只ETF');
-        setIsRunning(false);
-        return;
-      }
-    } else {
-      addLog('info', `已选择 ${selectedStocks.length} 只股票: ${selectedStocks.map(s => s.code).join(', ')}`);
-      if (selectedStocks.length === 0) {
-        addLog('error', '错误: 请至少选择一只股票');
-        setIsRunning(false);
-        return;
-      }
+    if (selectedETFs.length === 0) {
+      addLog('error', '错误: 请至少选择一只ETF');
+      setIsRunning(false);
+      return;
     }
 
     addLog('info', `回测时间范围: ${backtestParams.startDate} 至 ${backtestParams.endDate}`);
@@ -152,31 +123,11 @@ export default function StrategyBacktest() {
         ...defaultBacktestConfig,
         ...backtestParams,
         parameters: strategyParams,
-        etfCodes: isAutoSelectStrategy 
-          ? ['510300']
-          : isCompoundStrategy 
-            ? selectedETFs 
-            : selectedStocks.map(s => s.code),
+        etfCodes: selectedETFs,
       };
 
       setProgress(40);
       setProgressText('正在处理数据...');
-
-      const handleProgress = (update: {
-        currentIndex: number;
-        totalDays: number;
-        currentDate: string;
-        percent: number;
-        dailyResult: DailySelectionResult | null;
-      }) => {
-        setCurrentIndex(update.currentIndex);
-        setTotalDays(update.totalDays);
-        setCurrentDate(update.currentDate);
-        setDailyResult(update.dailyResult);
-        const adjustedPercent = 40 + Math.round(update.percent * 0.4);
-        setProgress(adjustedPercent);
-        setProgressText(`正在处理: ${update.currentDate}`);
-      };
 
       const handleLog = (update: {
         stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
@@ -199,11 +150,7 @@ export default function StrategyBacktest() {
         }
       };
 
-      const backtestResult = await runBacktestAsync(
-        config, 
-        isAutoSelectStrategy ? handleProgress : undefined,
-        handleLog
-      );
+      const backtestResult = await runBacktestAsync(config, undefined, handleLog);
       
       setProgress(100);
       setProgressText('回测完成!');
@@ -257,7 +204,6 @@ export default function StrategyBacktest() {
 
   const renderStrategyCard = (strategy: Strategy) => {
     const isSelected = selectedStrategy === strategy.id;
-    const isCompound = strategy.category === 'compound';
     
     return (
       <button
@@ -265,9 +211,7 @@ export default function StrategyBacktest() {
         onClick={() => handleStrategyChange(strategy.id)}
         className={`w-full text-left px-4 py-3 rounded-lg transition-colors ${
           isSelected
-            ? isCompound
-              ? 'bg-purple-500/10 border-2 border-purple-500 text-purple-600 dark:text-purple-400'
-              : 'bg-primary/10 border-2 border-primary text-primary'
+            ? 'bg-purple-500/10 border-2 border-purple-500 text-purple-600 dark:text-purple-400'
             : 'bg-card border border-border hover:bg-accent'
         }`}
       >
@@ -277,27 +221,14 @@ export default function StrategyBacktest() {
             <div className="font-medium">{strategy.name}</div>
             <div className="flex items-center gap-2 mt-1">
               <span className="text-xs text-muted-foreground">{strategy.type}</span>
-              {isCompound && (
-                <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-500 rounded">
-                  复合策略
-                </span>
-              )}
+              <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-500 rounded">
+                复合策略
+              </span>
             </div>
           </div>
         </div>
       </button>
     );
-  };
-
-  const canRunBacktest = () => {
-    if (isAutoSelectStrategy) {
-      return true;
-    }
-    if (isCompoundStrategy) {
-      return selectedETFs.length > 0;
-    } else {
-      return selectedStocks.length > 0;
-    }
   };
 
   const handleExportReport = () => {
@@ -356,71 +287,39 @@ export default function StrategyBacktest() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center gap-2">
-                <Layers className="h-4 w-4 text-purple-500" />
-                <CardTitle className="text-base">复合策略</CardTitle>
+                <span className="text-lg">📊</span>
+                <CardTitle className="text-base">可用策略</CardTitle>
               </div>
               <CardDescription className="text-xs">
-                多因子量化策略
+                选择回测策略
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
-              {strategiesByCategory.compound.map(renderStrategyCard)}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Target className="h-4 w-4 text-primary" />
-                <CardTitle className="text-base">简易策略</CardTitle>
-              </div>
-              <CardDescription className="text-xs">
-                单因子量化策略
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {strategiesByCategory.simple.map(renderStrategyCard)}
+              {strategies.map(renderStrategyCard)}
             </CardContent>
           </Card>
         </div>
 
         <div className="lg:col-span-3 space-y-6">
-          <div className="flex items-center justify-between p-5 bg-gradient-to-r from-card via-card to-primary/5 rounded-xl border shadow-sm">
+          <div className="flex items-center justify-between p-5 bg-gradient-to-r from-card via-card to-purple-500/5 rounded-xl border shadow-sm">
             <div className="flex items-center gap-5">
-              <div className={`w-16 h-16 rounded-xl flex items-center justify-center text-3xl ${
-                currentStrategy.category === 'compound' 
-                  ? 'bg-purple-500/20' 
-                  : 'bg-primary/20'
-              }`}>
+              <div className="w-16 h-16 rounded-xl flex items-center justify-center text-3xl bg-purple-500/20">
                 {currentStrategy.icon}
               </div>
               <div>
                 <h2 className="text-2xl font-bold">{currentStrategy.name}</h2>
-                {currentStrategy.category === 'compound' && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
-                    <span className="text-sm text-purple-500 font-medium">多因子量化策略</span>
-                    <span className="text-xs text-muted-foreground">综合多个因子进行选股择时</span>
-                  </div>
-                )}
-                {currentStrategy.category === 'simple' && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="w-2 h-2 bg-primary rounded-full"></span>
-                    <span className="text-sm text-primary font-medium">单因子量化策略</span>
-                    <span className="text-xs text-muted-foreground">基于单一因子信号交易</span>
-                  </div>
-                )}
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
+                  <span className="text-sm text-purple-500 font-medium">多因子量化策略</span>
+                  <span className="text-xs text-muted-foreground">综合多个因子进行选股择时</span>
+                </div>
               </div>
             </div>
             <Button
               size="lg"
               onClick={handleRunBacktest}
-              disabled={isRunning || !canRunBacktest()}
-              className={`${
-                currentStrategy.category === 'compound'
-                  ? 'bg-purple-500 hover:bg-purple-600'
-                  : 'bg-primary hover:bg-primary/90'
-              } shadow-lg`}
+              disabled={isRunning || selectedETFs.length === 0}
+              className="bg-purple-500 hover:bg-purple-600 shadow-lg"
             >
               {isRunning ? (
                 <>
@@ -469,116 +368,40 @@ export default function StrategyBacktest() {
             />
           </div>
 
-          {isAutoSelectStrategy ? (
-            <Card>
-              <CardHeader>
+          <ETFSelector
+            etfs={etfPool}
+            selectedCodes={selectedETFs}
+            onChange={setSelectedETFs}
+          />
+
+          {isRunning && (
+            <Card className="border-primary/50 bg-gradient-to-r from-primary/5 to-transparent">
+              <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
-                  <span>🎯</span>
-                  自动选股池
+                  <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                  回测进度
                 </CardTitle>
-                <CardDescription>
-                  本策略自动从沪深300成分股中筛选优质标的
-                </CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                  <div className="text-3xl">📊</div>
-                  <div className="flex-1">
-                    <div className="font-medium text-blue-700 dark:text-blue-300">
-                      沪深300成分股
-                    </div>
-                    <div className="text-sm text-blue-600 dark:text-blue-400 mt-1">
-                      策略将自动从300只大盘蓝筹股中，通过六因子打分系统筛选优质标的
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">300</div>
-                    <div className="text-xs text-blue-500">只股票</div>
+              <CardContent className="space-y-3">
+                <div className="w-full bg-secondary rounded-full h-4 overflow-hidden shadow-inner">
+                  <div 
+                    className="bg-gradient-to-r from-purple-500 to-purple-500/70 h-full rounded-full transition-all duration-300 ease-out flex items-center justify-end pr-2"
+                    style={{ width: `${progress}%` }}
+                  >
+                    {progress > 10 && (
+                      <span className="text-xs font-bold text-white">{progress}%</span>
+                    )}
                   </div>
                 </div>
-                <div className="mt-4 text-sm text-muted-foreground">
-                  <div className="font-medium mb-2">六因子筛选体系：</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>5日动量 (0-25分)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>20日动量 (0-20分)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>趋势强度 (0-25分)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>量比因子 (0-10分)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>波动率因子 (0-10分)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      <span>市值因子 (0-10分)</span>
-                    </div>
-                  </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground flex items-center gap-2">
+                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></span>
+                    {progressText}
+                  </span>
+                  <span className="font-medium text-purple-500">{progress}%</span>
                 </div>
               </CardContent>
             </Card>
-          ) : isCompoundStrategy ? (
-            <ETFSelector
-              etfs={etfPool}
-              selectedCodes={selectedETFs}
-              onChange={setSelectedETFs}
-            />
-          ) : (
-            <StockSelector
-              selectedStocks={selectedStocks}
-              onChange={setSelectedStocks}
-              maxStocks={10}
-            />
-          )}
-
-          {isRunning && (
-            isAutoSelectStrategy ? (
-              <BacktestProgress
-                currentIndex={currentIndex}
-                totalDays={totalDays}
-                currentDate={currentDate}
-                percent={progress}
-                dailyResult={dailyResult}
-              />
-            ) : (
-              <Card className="border-primary/50 bg-gradient-to-r from-primary/5 to-transparent">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                    回测进度
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="w-full bg-secondary rounded-full h-4 overflow-hidden shadow-inner">
-                    <div 
-                      className="bg-gradient-to-r from-primary to-primary/70 h-full rounded-full transition-all duration-300 ease-out flex items-center justify-end pr-2"
-                      style={{ width: `${progress}%` }}
-                    >
-                      {progress > 10 && (
-                        <span className="text-xs font-bold text-primary-foreground">{progress}%</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground flex items-center gap-2">
-                      <span className="w-2 h-2 bg-primary rounded-full animate-pulse"></span>
-                      {progressText}
-                    </span>
-                    <span className="font-medium text-primary">{progress}%</span>
-                  </div>
-                </CardContent>
-              </Card>
-            )
           )}
 
           <Card>
@@ -588,7 +411,7 @@ export default function StrategyBacktest() {
                   <span>📝</span>
                   回测日志
                   {isRunning && (
-                    <span className="text-xs px-2 py-0.5 bg-primary/20 text-primary rounded-full animate-pulse">
+                    <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-500 rounded-full animate-pulse">
                       运行中
                     </span>
                   )}
@@ -627,14 +450,12 @@ export default function StrategyBacktest() {
 
           {result && result.equityCurve.length > 0 && (
             <>
-              {result && (
-                <div className="flex justify-end">
-                  <Button variant="outline" size="lg" onClick={handleExportReport}>
-                    <Download className="mr-2 h-5 w-5" />
-                    📄 导出报告
-                  </Button>
-                </div>
-              )}
+              <div className="flex justify-end">
+                <Button variant="outline" size="lg" onClick={handleExportReport}>
+                  <Download className="mr-2 h-5 w-5" />
+                  📄 导出报告
+                </Button>
+              </div>
               <BacktestResults result={result} />
             </>
           )}

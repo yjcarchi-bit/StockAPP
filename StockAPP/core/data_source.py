@@ -382,7 +382,9 @@ class DataSource:
         """
         try:
             df = self._retry_request(ef.stock.get_base_info, "ETF")
-            return df
+            if df is not None and not df.empty:
+                return df
+            return pd.DataFrame()
         except Exception:
             return pd.DataFrame()
     
@@ -395,7 +397,9 @@ class DataSource:
         """
         try:
             df = self._retry_request(ef.stock.get_base_info, "A股")
-            return df
+            if df is not None and not df.empty:
+                return df
+            return pd.DataFrame()
         except Exception:
             return pd.DataFrame()
     

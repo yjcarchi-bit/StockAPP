@@ -1,13 +1,13 @@
 services:
   backend:
     build:
-      context: .
-      dockerfile: Dockerfile.backend
+      context: ..
+      dockerfile: docker/Dockerfile.backend
     container_name: stockapp-backend
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
@@ -20,8 +20,8 @@ services:
 
   frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.frontend
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
     container_name: stockapp-frontend
     ports:
       - "80:80"

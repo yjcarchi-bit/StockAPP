@@ -425,29 +425,43 @@ done
 # 启动前端
 echo "正在启动前端服务..."
 cd "$APP_DIR/frontend"
-npm run dev &
+npm run dev 2>&1 | tee /tmp/vite_output.log &
 FRONTEND_PID=$!
 echo "前端 PID: $FRONTEND_PID"
 
-# 等待前端启动
+# 等待前端启动并检测实际端口
 echo "等待前端服务启动..."
-for i in {1..15}; do
-    if curl -s http://localhost:5173 > /dev/null 2>&1; then
-        echo "前端服务启动成功!"
-        break
+FRONTEND_PORT=""
+for i in {1..20}; do
+    # 尝试从 Vite 输出中获取实际端口
+    if [ -z "$FRONTEND_PORT" ]; then
+        FRONTEND_PORT=$(grep -oE 'localhost:[0-9]+' /tmp/vite_output.log 2>/dev/null | head -1 | grep -oE '[0-9]+$')
+    fi
+    
+    # 如果找到了端口，验证服务是否可用
+    if [ -n "$FRONTEND_PORT" ]; then
+        if curl -s "http://localhost:$FRONTEND_PORT" > /dev/null 2>&1; then
+            echo "前端服务启动成功! 端口: $FRONTEND_PORT"
+            break
+        fi
     fi
     sleep 1
 done
 
+# 如果没有检测到端口，使用默认值
+if [ -z "$FRONTEND_PORT" ]; then
+    FRONTEND_PORT="5173"
+fi
+
 # 自动打开浏览器
 echo "正在打开浏览器..."
 sleep 2
-open http://localhost:5173
+open "http://localhost:$FRONTEND_PORT"
 
 echo ""
 echo "=========================================="
 echo "  服务已启动，浏览器已打开"
-echo "  前端地址: http://localhost:5173"
+echo "  前端地址: http://localhost:$FRONTEND_PORT"
 echo "  后端地址: http://localhost:8000"
 echo "  API文档:  http://localhost:8000/docs"
 echo "  关闭此窗口将停止应用"

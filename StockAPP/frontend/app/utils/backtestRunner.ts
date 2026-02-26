@@ -1,28 +1,19 @@
 import type { BacktestConfig } from './strategyConfig';
 import type { BacktestResult, Trade, MonthlyReturn } from './backtestEngine';
 import {
-  calculateSMA,
-  calculateEMA,
   calculateRSI,
   calculateMaxDrawdown,
   calculateSharpeRatio,
-  calculateLinearRegression,
 } from './backtestEngine';
 
 const COMMISSION_RATE = 0.0003;
 const STAMP_DUTY_RATE = 0.001;
-const SLIPPAGE_RATE = 0.001;
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
+const API_BASE = 'http://localhost:8000/api';
 
 interface PriceData {
   date: string;
   price: number | null;
-}
-
-interface CodeInfo {
-  code: string;
-  name: string;
 }
 
 export interface StockScoreDetail {
@@ -48,24 +39,14 @@ export interface TradeDecision {
   reason: string;
 }
 
-export interface DailySelectionResult {
-  date: string;
-  marketStatus: 'normal' | 'drawdown_lock' | 'partial_unlock';
-  candidates: StockScoreDetail[];
-  selectedStocks: string[];
-  trades: TradeDecision[];
-  portfolioValue: number;
-  drawdown: number;
-  cashRatio: number;
+export interface BacktestLogUpdate {
+  stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
+  message: string;
+  progress?: number;
+  total?: number;
 }
 
-export interface BacktestProgressUpdate {
-  currentIndex: number;
-  totalDays: number;
-  currentDate: string;
-  percent: number;
-  dailyResult: DailySelectionResult | null;
-}
+export type LogCallback = (update: BacktestLogUpdate) => void;
 
 export interface DataRangeInfo {
   code: string;
@@ -83,16 +64,6 @@ export interface BacktestDataInfo {
   dataRanges: DataRangeInfo[];
   warning?: string;
 }
-
-export interface BacktestLogUpdate {
-  stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
-  message: string;
-  progress?: number;
-  total?: number;
-}
-
-export type ProgressCallback = (update: BacktestProgressUpdate) => void;
-export type LogCallback = (update: BacktestLogUpdate) => void;
 
 const codeNameMap: Record<string, string> = {};
 
@@ -291,11 +262,10 @@ function calculateATR(highs: number[], lows: number[], closes: number[], period:
 
 export async function runBacktestAsync(
   config: BacktestConfig,
-  onProgress?: ProgressCallback,
+  _onProgress?: unknown,
   onLog?: LogCallback
 ): Promise<BacktestResult> {
   const isETF = config.strategy === 'etf_rotation';
-  const isLargeCapStrategy = config.strategy === 'large_cap_low_drawdown';
   
   onLog?.({ stage: 'data_fetch', message: '开始获取历史数据...' });
   
@@ -303,50 +273,17 @@ export async function runBacktestAsync(
   let names: Record<string, string>;
   let dataRanges: Record<string, { start: string; end: string; count: number }>;
   
-  if (isLargeCapStrategy) {
-    onLog?.({ stage: 'data_fetch', message: '正在获取沪深300成分股列表...' });
-    const hs300Stocks = await fetchHS300Stocks();
-    const stockCodes = hs300Stocks.slice(0, 50).map(s => s.code);
-    
-    hs300Stocks.forEach(s => {
-      codeNameMap[s.code] = s.name;
-    });
-    
-    onLog?.({ 
-      stage: 'data_fetch', 
-      message: `正在获取 ${stockCodes.length} 只股票的历史数据...`,
-      progress: 0,
-      total: stockCodes.length
-    });
-    
-    const result = await fetchRealData(stockCodes, config.startDate, config.endDate, false);
-    rawData = result.data;
-    names = { ...result.names };
-    hs300Stocks.forEach(s => {
-      if (!names[s.code]) {
-        names[s.code] = s.name;
-      }
-    });
-    dataRanges = result.dataRanges;
-    
-    onLog?.({ 
-      stage: 'data_fetch', 
-      message: `成功获取 ${Object.keys(rawData).length} 只股票的数据`,
-      progress: stockCodes.length,
-      total: stockCodes.length
-    });
-  } else {
-    onLog?.({ 
+  onLog?.({ 
       stage: 'data_fetch', 
       message: `正在获取 ${config.etfCodes.length} 只${isETF ? 'ETF' : '股票'}的历史数据...`,
       progress: 0,
       total: config.etfCodes.length
     });
     
-    const result = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
-    rawData = result.data;
-    names = result.names;
-    dataRanges = result.dataRanges;
+    const fetchResult = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
+    rawData = fetchResult.data;
+    names = fetchResult.names;
+    dataRanges = fetchResult.dataRanges;
     
     onLog?.({ 
       stage: 'data_fetch', 
@@ -354,7 +291,6 @@ export async function runBacktestAsync(
       progress: config.etfCodes.length,
       total: config.etfCodes.length
     });
-  }
   
   if (Object.keys(rawData).length === 0) {
     return createEmptyResult(config);
@@ -417,28 +353,8 @@ export async function runBacktestAsync(
   
   switch (config.strategy) {
     case 'etf_rotation':
-      result = runETFRotationBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'large_cap_low_drawdown':
-      result = runLargeCapLowDrawdownBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate, onProgress, onLog);
-      break;
-    case 'dual_ma':
-      result = runDualMABacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'rsi':
-      result = runRSIBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'macd':
-      result = runMACDBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'bollinger':
-      result = runBollingerBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'grid':
-      result = runGridBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
-      break;
     default:
-      result = runSimpleBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
+      result = runETFRotationBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
   }
   
   onLog?.({ stage: 'metrics', message: '正在计算回测指标...' });
@@ -766,322 +682,6 @@ function runETFRotationBacktest(
   return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
 }
 
-function runDualMABacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const fastPeriod = (config.parameters?.fast_period as number) || 10;
-  const slowPeriod = (config.parameters?.slow_period as number) || 30;
-  const maType = (config.parameters?.ma_type as string) || 'SMA';
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const prices = codeData.map(d => d.price);
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  const fastMA = maType === 'EMA' ? calculateEMA(prices, fastPeriod) : calculateSMA(prices, fastPeriod);
-  const slowMA = maType === 'EMA' ? calculateEMA(prices, slowPeriod) : calculateSMA(prices, slowPeriod);
-  
-  let cash = config.initialCapital;
-  let position = 0;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  const trades: Trade[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = prices[i];
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    if (i > 0 && !isNaN(fastMA[i]) && !isNaN(slowMA[i])) {
-      if (fastMA[i] > slowMA[i] && fastMA[i - 1] <= slowMA[i - 1] && position === 0) {
-        const shares = Math.floor(cash / price / 100) * 100;
-        if (shares >= 100) {
-          const buyAmount = shares * price;
-          const commission = buyAmount * COMMISSION_RATE;
-          
-          cash -= buyAmount + commission;
-          position = shares;
-          
-          trades.push({
-            date: dates[i],
-            type: 'buy',
-            code: targetCode,
-            name: getName(targetCode),
-            price,
-            shares,
-            amount: buyAmount,
-            commission,
-          });
-        }
-      }
-      else if (fastMA[i] < slowMA[i] && fastMA[i - 1] >= slowMA[i - 1] && position > 0) {
-        const sellAmount = position * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date: dates[i],
-          type: 'sell',
-          code: targetCode,
-          name: getName(targetCode),
-          price,
-          shares: position,
-          amount: sellAmount,
-          commission,
-        });
-        
-        position = 0;
-      }
-    }
-    
-    const portfolioValue = cash + position * price;
-    equityCurve.push({
-      date: dates[i],
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
-    });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runRSIBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const rsiPeriod = (config.parameters?.rsi_period as number) || 14;
-  const oversold = (config.parameters?.oversold as number) || 30;
-  const overbought = (config.parameters?.overbought as number) || 70;
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const prices = codeData.map(d => d.price);
-  const rsi = calculateRSI(prices, rsiPeriod);
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  let cash = config.initialCapital;
-  let position = 0;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  const trades: Trade[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = prices[i];
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    if (!isNaN(rsi[i])) {
-      if (rsi[i] < oversold && position === 0) {
-        const shares = Math.floor(cash / price / 100) * 100;
-        if (shares >= 100) {
-          const buyAmount = shares * price;
-          const commission = buyAmount * COMMISSION_RATE;
-          
-          cash -= buyAmount + commission;
-          position = shares;
-          
-          trades.push({
-            date: dates[i],
-            type: 'buy',
-            code: targetCode,
-            name: getName(targetCode),
-            price,
-            shares,
-            amount: buyAmount,
-            commission,
-          });
-        }
-      }
-      else if (rsi[i] > overbought && position > 0) {
-        const sellAmount = position * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date: dates[i],
-          type: 'sell',
-          code: targetCode,
-          name: getName(targetCode),
-          price,
-          shares: position,
-          amount: sellAmount,
-          commission,
-        });
-        
-        position = 0;
-      }
-    }
-    
-    const portfolioValue = cash + position * price;
-    equityCurve.push({
-      date: dates[i],
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
-    });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runMACDBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  return runDualMABacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
-}
-
-function runBollingerBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  return runRSIBacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
-}
-
-function runGridBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const firstPrice = codeData[0]?.price;
-  if (!firstPrice || firstPrice <= 0) {
-    return createEmptyResult(config);
-  }
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = codeData[i]?.price;
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    equityCurve.push({
-      date: dates[i],
-      value: shares * price,
-      return: i > 0 && codeData[i - 1]?.price ? ((price / codeData[i - 1].price) - 1) * 100 : 0,
-    });
-  }
-  
-  const trades: Trade[] = [
-    {
-      date: dates[0],
-      type: 'buy',
-      code: targetCode,
-      name: getName(targetCode),
-      price: firstPrice,
-      shares,
-      amount: shares * firstPrice,
-      commission: shares * firstPrice * COMMISSION_RATE,
-    },
-  ];
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runSimpleBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const firstPrice = codeData[0]?.price;
-  if (!firstPrice || firstPrice <= 0) {
-    return createEmptyResult(config);
-  }
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = codeData[i]?.price;
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    equityCurve.push({
-      date: dates[i],
-      value: shares * price,
-      return: i > 0 && codeData[i - 1]?.price ? ((price / codeData[i - 1].price) - 1) * 100 : 0,
-    });
-  }
-  
-  const trades: Trade[] = [
-    {
-      date: dates[0],
-      type: 'buy',
-      code: targetCode,
-      name: getName(targetCode),
-      price: firstPrice,
-      shares,
-      amount: shares * firstPrice,
-      commission: shares * firstPrice * COMMISSION_RATE,
-    },
-  ];
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
 function createEmptyResult(config: BacktestConfig): BacktestResult {
   return {
     totalReturn: 0,
@@ -1183,338 +783,3 @@ function calculateMetrics(
   };
 }
 
-function runLargeCapLowDrawdownBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string,
-  onProgress?: (update: BacktestProgressUpdate) => void,
-  onLog?: LogCallback
-): BacktestResult {
-  const maxPositions = (config.parameters?.max_positions as number) || 3;
-  const stopLossRatio = (config.parameters?.stop_loss_ratio as number) || 0.05;
-  const takeProfitRatio = (config.parameters?.take_profit_ratio as number) || 0.35;
-  const drawdownLockThreshold = (config.parameters?.drawdown_lock_threshold as number) || 0.10;
-  const useRsrsTiming = config.parameters?.use_rsrs_timing !== false;
-  const usePartialUnlock = config.parameters?.use_partial_unlock !== false;
-  const rsrsBuyThreshold = (config.parameters?.rsrs_buy_threshold as number) || 0.7;
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  let cash = config.initialCapital;
-  const positions: Map<string, { code: string; shares: number; costPrice: number; highestPrice: number }> = new Map();
-  const trades: Trade[] = [];
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  let maxTotalValue = config.initialCapital;
-  let drawdownLock = false;
-  let partialUnlock = false;
-  let unlockCooldownDays = 0;
-  const unlockCooldownMax = 10;
-  const fullUnlockDrawdown = 0.05;
-  const unlockPositionRatio = 0.3;
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  function calculateDrawdown(currentValue: number): number {
-    if (currentValue > maxTotalValue) {
-      maxTotalValue = currentValue;
-    }
-    return (maxTotalValue - currentValue) / maxTotalValue;
-  }
-  
-  function calculateStockScoreDetail(code: string, currentIndex: number): StockScoreDetail | null {
-    const data = priceData[code];
-    if (!data || currentIndex < 30) return null;
-    
-    const currentPrice = data[currentIndex]?.price;
-    if (currentPrice === null || currentPrice === undefined) return null;
-    
-    const closes: number[] = [];
-    for (let j = 0; j <= currentIndex; j++) {
-      if (data[j].price !== null) {
-        closes.push(data[j].price);
-      }
-    }
-    if (closes.length < 30) return null;
-    
-    const scores = {
-      momentum5: 0,
-      momentum20: 0,
-      trendStrength: 0,
-      volumeRatio: 0,
-      volatility: 0,
-      marketCap: 0,
-    };
-    
-    const momentum5 = (closes[closes.length - 1] / closes[closes.length - 6]) - 1;
-    if (momentum5 > 0.05) scores.momentum5 = 25;
-    else if (momentum5 > 0.02) scores.momentum5 = 15;
-    else if (momentum5 > 0) scores.momentum5 = 5;
-    
-    const momentum20 = (closes[closes.length - 1] / closes[closes.length - 21]) - 1;
-    if (momentum20 > 0.10) scores.momentum20 = 20;
-    else if (momentum20 > 0.05) scores.momentum20 = 12;
-    else if (momentum20 > 0) scores.momentum20 = 5;
-    
-    const ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-    const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const trendStrengthRatio = (ma5 - ma20) / ma20;
-    if (trendStrengthRatio > 0.01) scores.trendStrength = 25;
-    else if (trendStrengthRatio > 0.005) scores.trendStrength = 15;
-    else if (trendStrengthRatio > 0) scores.trendStrength = 5;
-    
-    const returns = [];
-    for (let i = 1; i < Math.min(20, closes.length); i++) {
-      returns.push((closes[closes.length - i] - closes[closes.length - i - 1]) / closes[closes.length - i - 1]);
-    }
-    const volatilityRatio = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
-    if (volatilityRatio < 0.05) scores.volatility = 10;
-    else if (volatilityRatio < 0.08) scores.volatility = 5;
-    
-    const totalScore = scores.momentum5 + scores.momentum20 + scores.trendStrength + scores.volumeRatio + scores.volatility + scores.marketCap;
-    
-    return {
-      code,
-      name: getName(code),
-      scores,
-      totalScore,
-      rank: 0,
-      isSelected: false,
-    };
-  }
-  
-  for (let i = 0; i < dates.length; i++) {
-    const date = dates[i];
-    
-    if (i === 0) {
-      onLog?.({ 
-        stage: 'backtest', 
-        message: `开始回测，共 ${dates.length} 个交易日`,
-        progress: 0,
-        total: dates.length
-      });
-    } else if (i % 500 === 0) {
-      onLog?.({ 
-        stage: 'backtest', 
-        message: `回测进度: ${date} (${Math.round(i / dates.length * 100)}%)`,
-        progress: i,
-        total: dates.length
-      });
-    }
-    
-    let portfolioValue = cash;
-    positions.forEach((pos, code) => {
-      const price = getPriceSafely(priceData, code, i);
-      if (price !== null) {
-        portfolioValue += pos.shares * price;
-      }
-    });
-    
-    const drawdown = calculateDrawdown(portfolioValue);
-    
-    if (drawdown >= drawdownLockThreshold) {
-      if (usePartialUnlock && unlockCooldownDays > 0) {
-        unlockCooldownDays--;
-      } else {
-        for (const [code, pos] of positions) {
-          const price = getPriceSafely(priceData, code, i);
-          if (price === null) continue;
-          
-          const sellAmount = pos.shares * price;
-          const commission = sellAmount * COMMISSION_RATE;
-          const stampDuty = sellAmount * STAMP_DUTY_RATE;
-          
-          cash += sellAmount - commission - stampDuty;
-          
-          trades.push({
-            date,
-            type: 'sell',
-            code,
-            name: getName(code),
-            price,
-            shares: pos.shares,
-            amount: sellAmount,
-            commission,
-          });
-        }
-        positions.clear();
-        drawdownLock = true;
-        partialUnlock = false;
-      }
-    }
-    
-    if (drawdownLock) {
-      if (usePartialUnlock && partialUnlock) {
-        if (unlockCooldownDays > 0) {
-          unlockCooldownDays--;
-        }
-        if (drawdown < fullUnlockDrawdown) {
-          partialUnlock = false;
-          drawdownLock = false;
-        }
-      } else if (drawdown < drawdownLockThreshold * 0.5) {
-        if (usePartialUnlock) {
-          partialUnlock = true;
-          unlockCooldownDays = unlockCooldownMax;
-        } else {
-          drawdownLock = false;
-        }
-      }
-    }
-    
-    for (const [code, pos] of positions) {
-      const price = getPriceSafely(priceData, code, i);
-      if (price === null) continue;
-      
-      if (price > pos.highestPrice) {
-        pos.highestPrice = price;
-      }
-      
-      const profitRatio = (price - pos.costPrice) / pos.costPrice;
-      
-      if (profitRatio >= takeProfitRatio || profitRatio <= -stopLossRatio) {
-        const sellAmount = pos.shares * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date,
-          type: 'sell',
-          code,
-          name: getName(code),
-          price,
-          shares: pos.shares,
-          amount: sellAmount,
-          commission,
-        });
-        
-        positions.delete(code);
-      }
-    }
-    
-    if (!drawdownLock || partialUnlock) {
-      const currentPositions = positions.size;
-      
-      if (currentPositions < maxPositions) {
-        const scoreDetails: StockScoreDetail[] = [];
-        
-        for (const code of codes) {
-          if (!positions.has(code)) {
-            const detail = calculateStockScoreDetail(code, i);
-            if (detail && detail.totalScore > 0) {
-              scoreDetails.push(detail);
-            }
-          }
-        }
-        
-        scoreDetails.sort((a, b) => b.totalScore - a.totalScore);
-        scoreDetails.forEach((detail, index) => {
-          detail.rank = index + 1;
-        });
-        
-        const buyCandidates = scoreDetails.slice(0, maxPositions - currentPositions);
-        buyCandidates.forEach(detail => detail.isSelected = true);
-        
-        const dailyResult: DailySelectionResult = {
-          date,
-          marketStatus: drawdownLock 
-            ? (partialUnlock ? 'partial_unlock' : 'drawdown_lock') 
-            : 'normal',
-          candidates: scoreDetails.slice(0, 10),
-          selectedStocks: buyCandidates.map(c => c.code),
-          trades: [],
-          portfolioValue,
-          drawdown: drawdown * 100,
-          cashRatio: (cash / portfolioValue) * 100,
-        };
-        
-        if (onProgress && i % 5 === 0) {
-          onProgress({
-            currentIndex: i,
-            totalDays: dates.length,
-            currentDate: date,
-            percent: Math.round((i / dates.length) * 100),
-            dailyResult,
-          });
-        }
-        
-        let availableCash = cash;
-        if (partialUnlock) {
-          const currentPositionValue = Array.from(positions.values()).reduce((sum, pos) => {
-            const price = getPriceSafely(priceData, pos.code, i);
-            return sum + (price !== null ? pos.shares * price : 0);
-          }, 0);
-          const maxPositionValue = portfolioValue * unlockPositionRatio;
-          availableCash = Math.min(cash, maxPositionValue - currentPositionValue);
-        }
-        
-        const cashPerStock = buyCandidates.length > 0 ? availableCash / buyCandidates.length * 0.95 : 0;
-        
-        for (const candidate of buyCandidates) {
-          if (positions.size >= maxPositions) break;
-          
-          const code = candidate.code;
-          const price = getPriceSafely(priceData, code, i);
-          if (price === null || price <= 0) continue;
-          
-          const shares = Math.floor(cashPerStock / price / 100) * 100;
-          
-          if (shares >= 100 && cash >= shares * price * (1 + COMMISSION_RATE)) {
-            const buyAmount = shares * price;
-            const commission = buyAmount * COMMISSION_RATE;
-            
-            cash -= buyAmount + commission;
-            positions.set(code, {
-              code,
-              shares,
-              costPrice: price,
-              highestPrice: price,
-            });
-            
-            trades.push({
-              date,
-              type: 'buy',
-              code,
-              name: getName(code),
-              price,
-              shares,
-              amount: buyAmount,
-              commission,
-            });
-            
-            dailyResult.trades.push({
-              action: 'buy',
-              code,
-              name: getName(code),
-              reason: `得分排名第${candidate.rank}，总分${candidate.totalScore}分`,
-            });
-          }
-        }
-      }
-    }
-    
-    portfolioValue = cash;
-    positions.forEach((pos, code) => {
-      const price = getPriceSafely(priceData, code, i);
-      if (price !== null) {
-        portfolioValue += pos.shares * price;
-      }
-    });
-    
-    equityCurve.push({
-      date,
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
-    });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
