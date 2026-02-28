@@ -1,5 +1,5 @@
 import type { BacktestConfig } from './strategyConfig';
-import type { BacktestResult, Trade, MonthlyReturn } from './backtestEngine';
+import type { BacktestResult, Trade, MonthlyReturn, DailyPosition, PositionItem } from './backtestEngine';
 import {
   calculateRSI,
   calculateMaxDrawdown,
@@ -374,6 +374,8 @@ interface Position {
   shares: number;
   costPrice: number;
   highestPrice: number;
+  name?: string;
+  prevMarketValue?: number;
 }
 
 function getPriceSafely(priceData: Record<string, PriceData[]>, code: string, index: number): number | null {
@@ -427,6 +429,7 @@ function runETFRotationBacktest(
   const positions: Map<string, Position> = new Map();
   const equityCurve: { date: string; value: number; return: number }[] = [];
   const trades: Trade[] = [];
+  const dailyPositions: DailyPosition[] = [];
   
   const getName = (code: string) => names[code] || codeNameMap[code] || code;
   
@@ -646,7 +649,8 @@ function runETFRotationBacktest(
               code, 
               shares, 
               costPrice: price,
-              highestPrice: price 
+              highestPrice: price,
+              name: getName(code),
             });
             
             trades.push({
@@ -665,10 +669,30 @@ function runETFRotationBacktest(
     }
     
     let portfolioValue = cash;
+    const positionItems: PositionItem[] = [];
+    
     positions.forEach((pos, code) => {
       const price = getPriceSafely(priceData, code, i);
       if (price !== null) {
-        portfolioValue += pos.shares * price;
+        const marketValue = pos.shares * price;
+        portfolioValue += marketValue;
+        
+        const profit = (price - pos.costPrice) * pos.shares;
+        const dailyProfit = pos.prevMarketValue ? marketValue - pos.prevMarketValue : profit;
+        const profitPct = pos.costPrice > 0 ? ((price / pos.costPrice) - 1) * 100 : 0;
+        
+        positionItems.push({
+          code,
+          name: pos.name || getName(code),
+          shares: pos.shares,
+          price,
+          marketValue,
+          profit,
+          dailyProfit,
+          profitPct,
+        });
+        
+        pos.prevMarketValue = marketValue;
       }
     });
     
@@ -677,9 +701,22 @@ function runETFRotationBacktest(
       value: portfolioValue,
       return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
     });
+    
+    const totalProfit = portfolioValue - config.initialCapital;
+    const prevTotalValue = i > 0 ? equityCurve[i - 1].value : config.initialCapital;
+    const totalDailyProfit = portfolioValue - prevTotalValue;
+    
+    dailyPositions.push({
+      date,
+      positions: positionItems,
+      cash,
+      totalValue: portfolioValue,
+      totalProfit,
+      totalDailyProfit,
+    });
   }
   
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate, dailyPositions);
 }
 
 function createEmptyResult(config: BacktestConfig): BacktestResult {
@@ -700,6 +737,7 @@ function createEmptyResult(config: BacktestConfig): BacktestResult {
     drawdownSeries: [],
     trades: [],
     monthlyReturns: [],
+    dailyPositions: [],
   };
 }
 
@@ -708,7 +746,8 @@ function calculateMetrics(
   trades: Trade[],
   config: BacktestConfig,
   actualStartDate?: string,
-  actualEndDate?: string
+  actualEndDate?: string,
+  dailyPositions: DailyPosition[] = []
 ): BacktestResult {
   if (equityCurve.length === 0) {
     return createEmptyResult(config);
@@ -780,6 +819,7 @@ function calculateMetrics(
     }),
     trades,
     monthlyReturns,
+    dailyPositions,
   };
 }
 

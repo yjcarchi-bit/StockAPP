@@ -6,6 +6,7 @@ import EquityCurveChart from '../charts/EquityCurveChart';
 import TradeList from '../charts/TradeList';
 import MonthlyHeatmap from '../charts/MonthlyHeatmap';
 import MetricsTable from '../charts/MetricsTable';
+import DailyPositionTable from '../charts/DailyPositionTable';
 import type { BacktestResult } from '../../utils/backtestEngine';
 
 interface BacktestResultsProps {
@@ -64,9 +65,10 @@ export default function BacktestResults({ result }: BacktestResultsProps) {
           </div>
 
           <Tabs defaultValue="chart" className="w-full">
-            <TabsList className="grid w-full grid-cols-4 h-auto">
+            <TabsList className="grid w-full grid-cols-5 h-auto">
               <TabsTrigger value="chart" className="text-xs sm:text-sm">📈 资金曲线</TabsTrigger>
               <TabsTrigger value="trades" className="text-xs sm:text-sm">📋 交易记录</TabsTrigger>
+              <TabsTrigger value="positions" className="text-xs sm:text-sm">💼 每日持仓</TabsTrigger>
               <TabsTrigger value="monthly" className="text-xs sm:text-sm">📅 月度收益</TabsTrigger>
               <TabsTrigger value="metrics" className="text-xs sm:text-sm">📊 详细指标</TabsTrigger>
             </TabsList>
@@ -80,6 +82,10 @@ export default function BacktestResults({ result }: BacktestResultsProps) {
 
             <TabsContent value="trades" className="mt-4">
               <TradeList trades={result.trades} />
+            </TabsContent>
+
+            <TabsContent value="positions" className="mt-4">
+              <DailyPositionTable dailyPositions={result.dailyPositions || []} />
             </TabsContent>
 
             <TabsContent value="monthly" className="mt-4">

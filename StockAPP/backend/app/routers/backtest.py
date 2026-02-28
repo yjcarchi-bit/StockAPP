@@ -21,6 +21,7 @@ from ..models import (
     Metrics,
     EquityPoint,
     Trade,
+    DailyPosition,
     APIResponse,
 )
 
