@@ -47,6 +47,28 @@ class MonthlyReturn(BaseModel):
     return_rate: float
 
 
+class PositionItem(BaseModel):
+    """持仓项"""
+    code: str = Field(..., description="证券代码")
+    name: str = Field("", description="证券名称")
+    shares: int = Field(..., description="持仓数量")
+    price: float = Field(..., description="收盘价/结算价")
+    market_value: float = Field(..., description="市值/价值")
+    profit: float = Field(0, description="盈亏/逐笔浮盈")
+    daily_profit: float = Field(0, description="当日盈亏")
+    profit_pct: float = Field(0, description="盈亏占比")
+
+
+class DailyPosition(BaseModel):
+    """每日持仓"""
+    date: str = Field(..., description="日期")
+    positions: List[PositionItem] = Field(default_factory=list, description="持仓列表")
+    cash: float = Field(0, description="现金")
+    total_value: float = Field(0, description="总资产")
+    total_profit: float = Field(0, description="总盈亏")
+    total_daily_profit: float = Field(0, description="当日总盈亏")
+
+
 class BacktestResult(BaseModel):
     """回测结果"""
     result_id: str = Field(..., description="结果ID")
@@ -55,6 +77,7 @@ class BacktestResult(BaseModel):
     equity_curve: List[EquityPoint] = Field(default_factory=list, description="资金曲线")
     trades: List[Trade] = Field(default_factory=list, description="交易记录")
     monthly_returns: List[MonthlyReturn] = Field(default_factory=list, description="月度收益")
+    daily_positions: List[DailyPosition] = Field(default_factory=list, description="每日持仓")
 
 
 class CompareResult(BaseModel):

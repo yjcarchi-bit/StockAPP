@@ -1,0 +1,14 @@
+"""
+多因子策略模块
+==============
+综合多个因子进行选股择时的复合策略
+
+包含:
+- ETF轮动策略 (ETF Rotation)
+"""
+
+from .etf_rotation import ETFRotationStrategy
+
+__all__ = [
+    "ETFRotationStrategy",
+]

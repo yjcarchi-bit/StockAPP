@@ -624,6 +624,83 @@ class Indicators:
         return result
     
     @staticmethod
+    def RSRS(
+        high: Union[np.ndarray, pd.Series],
+        low: Union[np.ndarray, pd.Series],
+        n: int = 18,
+        m: int = 1100
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        RSRS指标（阻力支撑相对强度）
+        
+        通过最高价和最低价的线性回归计算斜率，并进行标准化
+        
+        Args:
+            high: 最高价
+            low: 最低价
+            n: 线性回归周期
+            m: 标准化窗口周期
+            
+        Returns:
+            (斜率beta, R², 右偏标准分) 元组
+        """
+        high = np.asarray(high, dtype=float)
+        low = np.asarray(low, dtype=float)
+        
+        length = len(high)
+        beta = np.full(length, np.nan)
+        r2 = np.full(length, np.nan)
+        
+        for i in range(n - 1, length):
+            high_window = high[i-n+1:i+1]
+            low_window = low[i-n+1:i+1]
+            
+            if not np.any(np.isnan(high_window)) and not np.any(np.isnan(low_window)):
+                x = low_window
+                y = high_window
+                
+                x_mean = np.mean(x)
+                y_mean = np.mean(y)
+                
+                numerator = np.sum((x - x_mean) * (y - y_mean))
+                denominator = np.sum((x - x_mean) ** 2)
+                
+                if denominator != 0:
+                    slope = numerator / denominator
+                    intercept = y_mean - slope * x_mean
+                    
+                    y_pred = slope * x + intercept
+                    ss_res = np.sum((y - y_pred) ** 2)
+                    ss_tot = np.sum((y - y_mean) ** 2)
+                    
+                    beta[i] = slope
+                    if ss_tot != 0:
+                        r2[i] = 1 - ss_res / ss_tot
+        
+        zscore_rightdev = np.full(length, np.nan)
+        
+        valid_mask = ~np.isnan(beta)
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) > 0:
+            valid_betas = beta[valid_mask]
+            valid_r2s = r2[valid_mask]
+            
+            for i, idx in enumerate(valid_indices):
+                window_start = max(0, i - m + 1)
+                window_betas = valid_betas[window_start:i+1]
+                
+                if len(window_betas) >= 2:
+                    mu = np.mean(window_betas)
+                    sigma = np.std(window_betas)
+                    
+                    if sigma != 0:
+                        zscore = (window_betas[-1] - mu) / sigma
+                        zscore_rightdev[idx] = zscore * valid_betas[i] * valid_r2s[i]
+        
+        return beta, r2, zscore_rightdev
+
+    @staticmethod
     def annualized_return(
         close: Union[np.ndarray, pd.Series],
         period: int = 20,

@@ -8,30 +8,17 @@
 - 内置指标计算方法
 - 交易便捷方法
 - 参数管理
-- 支持简易策略和复合策略分类
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Dict, List, Optional, Any, Union, Callable
 import pandas as pd
 import numpy as np
 
 from .indicators import Indicators
 from .portfolio import Portfolio, Position
-
-
-class StrategyCategory(Enum):
-    """
-    策略类别枚举
-    
-    SIMPLE: 简易策略 - 针对单一证券进行交易信号判断
-    COMPOUND: 复合策略 - 需要多个证券数据进行比较、选择、轮动
-    """
-    SIMPLE = "simple"
-    COMPOUND = "compound"
 
 
 @dataclass
@@ -93,10 +80,9 @@ class StrategyBase(ABC):
     
     所有策略必须继承此类并实现以下方法:
     - initialize(): 策略初始化
-    - on_bar(bar): K线回调
+    - on_trading_day(date, bars): 交易日回调，每天调用一次
     
     子类应重写以下类属性:
-    - category: 策略类别 (SIMPLE/COMPOUND)
     - display_name: 显示名称
     - description: 策略描述
     - logic: 策略逻辑列表
@@ -106,7 +92,6 @@ class StrategyBase(ABC):
     
     Example:
         class MyStrategy(StrategyBase):
-            category = StrategyCategory.SIMPLE
             display_name = "我的策略"
             description = "这是一个示例策略"
             logic = ["1. 计算指标", "2. 生成信号"]
@@ -115,9 +100,17 @@ class StrategyBase(ABC):
             params_info = {
                 "fast_period": {"default": 10, "min": 5, "max": 30, "description": "快线周期"}
             }
+            
+            def initialize(self):
+                self._fast_period = self.get_param("fast_period", 10)
+            
+            def on_trading_day(self, date, bars):
+                # 策略逻辑，每天调用一次
+                for code, bar in bars.items():
+                    # 处理每个证券
+                    pass
     """
     
-    category: StrategyCategory = StrategyCategory.SIMPLE
     display_name: str = ""
     description: str = ""
     logic: List[str] = []
@@ -200,14 +193,13 @@ class StrategyBase(ABC):
         pass
     
     @abstractmethod
-    def on_bar(self, bar: BarData) -> None:
+    def on_trading_day(self, date: datetime, bars: Dict[str, "BarData"]) -> None:
         """
-        K线回调
-        
-        每根K线触发一次，在此实现策略逻辑
+        交易日回调 - 每天只调用一次
         
         Args:
-            bar: K线数据
+            date: 当前交易日
+            bars: 所有证券当天的K线数据 {code: BarData}
         """
         pass
     
@@ -493,7 +485,6 @@ class StrategyBase(ABC):
         return {
             "name": self._name,
             "display_name": self.display_name or self._name,
-            "category": self.category.value,
             "description": self.description,
             "logic": self.logic,
             "suitable": self.suitable,

@@ -14,19 +14,11 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from core import BacktestEngine, BacktestConfig
-from strategies import (
-    DualMAStrategy, RSIStrategy, ETFRotationStrategy,
-    MACDStrategy, BollingerStrategy, GridTradingStrategy
-)
+from strategies import ETFRotationStrategy
 
 
 STRATEGY_MAP = {
     "etf_rotation": ETFRotationStrategy,
-    "dual_ma": DualMAStrategy,
-    "rsi": RSIStrategy,
-    "macd": MACDStrategy,
-    "bollinger": BollingerStrategy,
-    "grid": GridTradingStrategy,
 }
 
 
@@ -96,53 +88,3 @@ class BacktestService:
     def _format_result(self, result, strategy: str) -> Dict[str, Any]:
         """格式化回测结果"""
         equity_curve = []
-        if not result.daily_values.empty:
-            for idx, row in result.daily_values.iterrows():
-                equity_curve.append({
-                    "date": idx.strftime("%Y-%m-%d") if hasattr(idx, 'strftime') else str(idx),
-                    "value": float(row["total_value"])
-                })
-        
-        trades = []
-        if not result.trade_records.empty:
-            for _, trade in result.trade_records.iterrows():
-                trades.append({
-                    "timestamp": str(trade["timestamp"]),
-                    "code": trade["code"],
-                    "side": trade["side"],
-                    "price": float(trade["price"]),
-                    "amount": int(trade["amount"]),
-                    "value": float(trade["value"])
-                })
-        
-        monthly_returns = self._calculate_monthly_returns(result.daily_values)
-        
-        return {
-            "strategy": strategy,
-            "metrics": result.metrics,
-            "equity_curve": equity_curve,
-            "trades": trades,
-            "monthly_returns": monthly_returns
-        }
-    
-    def _calculate_monthly_returns(self, daily_values: pd.DataFrame) -> List[Dict[str, Any]]:
-        """计算月度收益"""
-        if daily_values.empty:
-            return []
-        
-        df = daily_values.copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        
-        monthly = df["total_value"].resample("M").last().pct_change() * 100
-        monthly = monthly.dropna()
-        
-        result = []
-        for idx, value in monthly.items():
-            result.append({
-                "year": idx.year,
-                "month": idx.month,
-                "return_rate": round(float(value), 2)
-            })
-        
-        return result

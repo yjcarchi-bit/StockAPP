@@ -4,43 +4,48 @@
 
 ## 功能特性
 
-- 支持 6 种内置策略
+- 支持 7 种内置策略
 - 多种策略回测、对比和参数优化
+- 实时数据更新与 WebSocket 推送
 
 ## 技术栈
 
-- **后端**: Python + FastAPI
-- **前端**: React + TypeScript + Tailwind CSS
+- **后端**: Python 3.9+ + FastAPI 0.109.0
+- **前端**: React 18.3 + TypeScript + Tailwind CSS 4.1
 - **数据源**: efinance
 
+## 项目结构
+
+```
+StockAPP/
+├── backend/           # FastAPI 后端
+│   └── app/
+│       ├── routers/   # API 路由
+│       ├── services/  # 业务逻辑
+│       └── models/    # 数据模型
+├── frontend/          # React 前端
+├── core/              # 核心回测引擎
+├── config/            # 配置文件
+├── strategies/        # 策略实现
+│   ├── simple/        # 简单策略 (5种)
+│   └── multi_factor/  # 多因子策略 (2种)
+└── data/              # 数据缓存
+```
+
 ## 快速启动
-
-### 方式一：统一启动（推荐）
-
-**macOS/Linux:**
-```bash
-./start.sh
-```
-
-**Windows:**
-```bash
-start.bat
-```
-
-### 方式二：分别启动
 
 **后端:**
 ```bash
 cd backend
-./start.sh        # macOS/Linux
-start.bat         # Windows
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
 ```
 
 **前端:**
 ```bash
 cd frontend
-./start.sh        # macOS/Linux
-start.bat         # Windows
+npm install
+npm run dev
 ```
 
 ## 访问地址
@@ -56,6 +61,7 @@ start.bat         # Windows
 | 策略 | 类型 | 说明 |
 |------|------|------|
 | ETF轮动策略 | 动量策略 | 基于动量因子的ETF轮动 |
+| 大市值低回撤 | 动量策略 | 六因子打分+RSRS择时 |
 | 双均线策略 | 趋势跟踪 | 快慢均线交叉 |
 | RSI策略 | 均值回归 | 超买超卖反转 |
 | MACD策略 | 趋势跟踪 | MACD金叉死叉 |
@@ -66,10 +72,3 @@ start.bat         # Windows
 
 - Python 3.9+
 - Node.js 18+
-
-## 版本历史
-
-| 版本 | 说明 |
-|------|------|
-| v1.0 | Streamlit 单体应用 |
-| v2.0 | React + FastAPI 分离架构 |

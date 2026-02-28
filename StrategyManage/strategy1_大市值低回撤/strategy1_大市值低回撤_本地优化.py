@@ -1118,10 +1118,10 @@ def main():
     """
     主函数
     
-    创建策略实例并运行30天的回测
+    创建策略实例并运行10年的回测
     """
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=3650)).strftime('%Y-%m-%d')
     
     strategy = LocalBacktestStrategyOptimized(
         start_date=start_date,

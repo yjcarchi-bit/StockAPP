@@ -21,6 +21,7 @@ export interface BacktestResult {
   drawdownSeries: DrawdownPoint[]; // 回撤序列
   trades: Trade[]; // 交易记录
   monthlyReturns: MonthlyReturn[]; // 月度收益
+  dailyPositions: DailyPosition[]; // 每日持仓
 
   // 对比数据
   benchmarkEquity?: EquityPoint[]; // 基准曲线
@@ -69,6 +70,26 @@ export interface MonthlyReturn {
   year: number;
   month: number;
   return: number;
+}
+
+export interface PositionItem {
+  code: string;
+  name: string;
+  shares: number;
+  price: number;
+  marketValue: number;
+  profit: number;
+  dailyProfit: number;
+  profitPct: number;
+}
+
+export interface DailyPosition {
+  date: string;
+  positions: PositionItem[];
+  cash: number;
+  totalValue: number;
+  totalProfit: number;
+  totalDailyProfit: number;
 }
 
 // 生成模拟的价格数据

@@ -23,7 +23,7 @@ const DEFAULT_OPTIMIZATION_PARAMS = {
 };
 
 export default function ParameterOptimization() {
-  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('optimization_strategy', 'dual_ma');
+  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('optimization_strategy', 'etf_rotation');
   const [selectedETF, setSelectedETF] = usePersistentState('optimization_etf', '510300');
   const [dateRange, setDateRange] = usePersistentState('optimization_date_range', DEFAULT_OPTIMIZATION_PARAMS);
   const [initialCapital, setInitialCapital] = usePersistentState('optimization_capital', 100000);

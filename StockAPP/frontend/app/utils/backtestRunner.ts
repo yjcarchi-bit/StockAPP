@@ -1,28 +1,19 @@
 import type { BacktestConfig } from './strategyConfig';
-import type { BacktestResult, Trade, MonthlyReturn } from './backtestEngine';
+import type { BacktestResult, Trade, MonthlyReturn, DailyPosition, PositionItem } from './backtestEngine';
 import {
-  calculateSMA,
-  calculateEMA,
   calculateRSI,
   calculateMaxDrawdown,
   calculateSharpeRatio,
-  calculateLinearRegression,
 } from './backtestEngine';
 
 const COMMISSION_RATE = 0.0003;
 const STAMP_DUTY_RATE = 0.001;
-const SLIPPAGE_RATE = 0.001;
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
+const API_BASE = 'http://localhost:8000/api';
 
 interface PriceData {
   date: string;
-  price: number;
-}
-
-interface CodeInfo {
-  code: string;
-  name: string;
+  price: number | null;
 }
 
 export interface StockScoreDetail {
@@ -48,24 +39,14 @@ export interface TradeDecision {
   reason: string;
 }
 
-export interface DailySelectionResult {
-  date: string;
-  marketStatus: 'normal' | 'drawdown_lock' | 'partial_unlock';
-  candidates: StockScoreDetail[];
-  selectedStocks: string[];
-  trades: TradeDecision[];
-  portfolioValue: number;
-  drawdown: number;
-  cashRatio: number;
+export interface BacktestLogUpdate {
+  stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
+  message: string;
+  progress?: number;
+  total?: number;
 }
 
-export interface BacktestProgressUpdate {
-  currentIndex: number;
-  totalDays: number;
-  currentDate: string;
-  percent: number;
-  dailyResult: DailySelectionResult | null;
-}
+export type LogCallback = (update: BacktestLogUpdate) => void;
 
 export interface DataRangeInfo {
   code: string;
@@ -83,8 +64,6 @@ export interface BacktestDataInfo {
   dataRanges: DataRangeInfo[];
   warning?: string;
 }
-
-export type ProgressCallback = (update: BacktestProgressUpdate) => void;
 
 const codeNameMap: Record<string, string> = {};
 
@@ -190,36 +169,41 @@ async function fetchRealData(
 
 function alignDataByDate(priceData: Record<string, PriceData[]>): { 
   alignedData: Record<string, PriceData[]>; 
-  commonDates: string[] 
+  commonDates: string[];
+  dateAvailability: Record<string, Set<string>>;
 } {
   const codes = Object.keys(priceData);
   if (codes.length === 0) {
-    return { alignedData: {}, commonDates: [] };
+    return { alignedData: {}, commonDates: [], dateAvailability: {} };
   }
   
-  const dateSet = new Set<string>();
-  priceData[codes[0]].forEach(d => dateSet.add(d.date));
+  const allDates = new Set<string>();
+  const dateAvailability: Record<string, Set<string>> = {};
   
-  for (let i = 1; i < codes.length; i++) {
-    const codeDates = new Set(priceData[codes[i]].map(d => d.date));
-    dateSet.forEach(date => {
-      if (!codeDates.has(date)) {
-        dateSet.delete(date);
-      }
+  codes.forEach(code => {
+    const codeDates = new Set<string>();
+    priceData[code].forEach(d => {
+      allDates.add(d.date);
+      codeDates.add(d.date);
     });
-  }
+    dateAvailability[code] = codeDates;
+  });
   
-  const commonDates = Array.from(dateSet).sort();
+  const commonDates = Array.from(allDates).sort();
   
   const alignedData: Record<string, PriceData[]> = {};
   codes.forEach(code => {
     const dataMap = new Map(priceData[code].map(d => [d.date, d]));
-    alignedData[code] = commonDates
-      .map(date => dataMap.get(date))
-      .filter((d): d is PriceData => d !== undefined);
+    alignedData[code] = commonDates.map(date => {
+      const existingData = dataMap.get(date);
+      if (existingData) {
+        return existingData;
+      }
+      return { date, price: null };
+    });
   });
   
-  return { alignedData, commonDates };
+  return { alignedData, commonDates, dateAvailability };
 }
 
 function weightedLinearRegression(prices: number[]): { slope: number; rSquared: number } {
@@ -278,51 +262,78 @@ function calculateATR(highs: number[], lows: number[], closes: number[], period:
 
 export async function runBacktestAsync(
   config: BacktestConfig,
-  onProgress?: ProgressCallback
+  _onProgress?: unknown,
+  onLog?: LogCallback
 ): Promise<BacktestResult> {
   const isETF = config.strategy === 'etf_rotation';
-  const isLargeCapStrategy = config.strategy === 'large_cap_low_drawdown';
+  
+  onLog?.({ stage: 'data_fetch', message: '开始获取历史数据...' });
   
   let rawData: Record<string, PriceData[]>;
   let names: Record<string, string>;
   let dataRanges: Record<string, { start: string; end: string; count: number }>;
   
-  if (isLargeCapStrategy) {
-    const hs300Stocks = await fetchHS300Stocks();
-    const stockCodes = hs300Stocks.slice(0, 50).map(s => s.code);
-    
-    hs300Stocks.forEach(s => {
-      codeNameMap[s.code] = s.name;
+  onLog?.({ 
+      stage: 'data_fetch', 
+      message: `正在获取 ${config.etfCodes.length} 只${isETF ? 'ETF' : '股票'}的历史数据...`,
+      progress: 0,
+      total: config.etfCodes.length
     });
     
-    const result = await fetchRealData(stockCodes, config.startDate, config.endDate, false);
-    rawData = result.data;
-    names = { ...result.names };
-    hs300Stocks.forEach(s => {
-      if (!names[s.code]) {
-        names[s.code] = s.name;
-      }
+    const fetchResult = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
+    rawData = fetchResult.data;
+    names = fetchResult.names;
+    dataRanges = fetchResult.dataRanges;
+    
+    onLog?.({ 
+      stage: 'data_fetch', 
+      message: `成功获取 ${Object.keys(rawData).length} 只${isETF ? 'ETF' : '股票'}的数据`,
+      progress: config.etfCodes.length,
+      total: config.etfCodes.length
     });
-    dataRanges = result.dataRanges;
-  } else {
-    const result = await fetchRealData(config.etfCodes, config.startDate, config.endDate, isETF);
-    rawData = result.data;
-    names = result.names;
-    dataRanges = result.dataRanges;
-  }
   
   if (Object.keys(rawData).length === 0) {
     return createEmptyResult(config);
   }
   
-  const { alignedData, commonDates } = alignDataByDate(rawData);
+  onLog?.({ stage: 'data_process', message: '正在对齐和过滤日期数据...' });
+  
+  const { alignedData, commonDates, dateAvailability } = alignDataByDate(rawData);
   
   if (commonDates.length === 0) {
     return createEmptyResult(config);
   }
   
-  const actualStartDate = commonDates[0];
-  const actualEndDate = commonDates[commonDates.length - 1];
+  onLog?.({ 
+    stage: 'data_process', 
+    message: `原始数据包含 ${commonDates.length} 个交易日` 
+  });
+  
+  const filteredDates = commonDates.filter(date => 
+    date >= config.startDate && date <= config.endDate
+  );
+  
+  if (filteredDates.length === 0) {
+    return createEmptyResult(config);
+  }
+  
+  const actualStartDate = filteredDates[0];
+  const actualEndDate = filteredDates[filteredDates.length - 1];
+  
+  onLog?.({ 
+    stage: 'data_process', 
+    message: `过滤后回测时间范围: ${actualStartDate} 至 ${actualEndDate}，共 ${filteredDates.length} 个交易日` 
+  });
+  
+  const filteredData: Record<string, PriceData[]> = {};
+  const startIndex = commonDates.indexOf(actualStartDate);
+  const endIndex = commonDates.indexOf(actualEndDate);
+  
+  Object.keys(alignedData).forEach(code => {
+    filteredData[code] = alignedData[code].slice(startIndex, endIndex + 1);
+  });
+  
+  onLog?.({ stage: 'data_process', message: '数据处理完成，开始执行回测...' });
   
   const dataInfo: BacktestDataInfo = {
     requestedStart: config.startDate,
@@ -336,42 +347,17 @@ export async function runBacktestAsync(
     })),
   };
   
-  if (actualStartDate > config.startDate) {
-    const limitingCodes = Object.entries(dataRanges)
-      .filter(([_, range]) => range.start === actualStartDate)
-      .map(([code]) => names[code] || code);
-    if (limitingCodes.length > 0) {
-      dataInfo.warning = `由于部分股票数据起始日期较晚，实际回测从${actualStartDate}开始`;
-    }
-  }
-  
   let result: BacktestResult;
+  
+  onLog?.({ stage: 'backtest', message: '开始执行回测策略...' });
   
   switch (config.strategy) {
     case 'etf_rotation':
-      result = runETFRotationBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'large_cap_low_drawdown':
-      result = runLargeCapLowDrawdownBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate, onProgress);
-      break;
-    case 'dual_ma':
-      result = runDualMABacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'rsi':
-      result = runRSIBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'macd':
-      result = runMACDBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'bollinger':
-      result = runBollingerBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
-    case 'grid':
-      result = runGridBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
-      break;
     default:
-      result = runSimpleBacktest(config, alignedData, commonDates, names, actualStartDate, actualEndDate);
+      result = runETFRotationBacktest(config, filteredData, filteredDates, names, actualStartDate, actualEndDate);
   }
+  
+  onLog?.({ stage: 'metrics', message: '正在计算回测指标...' });
   
   return {
     ...result,
@@ -388,11 +374,13 @@ interface Position {
   shares: number;
   costPrice: number;
   highestPrice: number;
+  name?: string;
+  prevMarketValue?: number;
 }
 
 function getPriceSafely(priceData: Record<string, PriceData[]>, code: string, index: number): number | null {
   const data = priceData[code];
-  if (!data || !data[index] || typeof data[index].price !== 'number') {
+  if (!data || !data[index] || data[index].price === null) {
     return null;
   }
   return data[index].price;
@@ -441,6 +429,7 @@ function runETFRotationBacktest(
   const positions: Map<string, Position> = new Map();
   const equityCurve: { date: string; value: number; return: number }[] = [];
   const trades: Trade[] = [];
+  const dailyPositions: DailyPosition[] = [];
   
   const getName = (code: string) => names[code] || codeNameMap[code] || code;
   
@@ -454,16 +443,25 @@ function runETFRotationBacktest(
         const codeData = priceData[code];
         if (!codeData || codeData.length <= i) return;
         
-        const history = codeData.slice(i - lookbackDays, i);
-        if (history.length < lookbackDays) return;
+        const currentPrice = codeData[i].price;
+        if (currentPrice === null) return;
         
-        const prices = history.map(d => d.price);
+        const history = codeData.slice(i - lookbackDays, i);
+        const prices = history.map(d => d.price).filter((p): p is number => p !== null);
+        if (prices.length < lookbackDays) return;
         if (!prices.every(p => typeof p === 'number' && !isNaN(p) && p > 0)) return;
         
         if (i >= 3) {
-          const day1Ratio = codeData[i].price / codeData[i - 1].price;
-          const day2Ratio = codeData[i - 1].price / codeData[i - 2].price;
-          const day3Ratio = codeData[i - 2].price / codeData[i - 3].price;
+          const p0 = codeData[i].price;
+          const p1 = codeData[i - 1].price;
+          const p2 = codeData[i - 2].price;
+          const p3 = codeData[i - 3].price;
+          
+          if (p0 === null || p1 === null || p2 === null || p3 === null) return;
+          
+          const day1Ratio = p0 / p1;
+          const day2Ratio = p1 / p2;
+          const day3Ratio = p2 / p3;
           
           if (Math.min(day1Ratio, day2Ratio, day3Ratio) < lossThreshold) {
             return;
@@ -471,15 +469,18 @@ function runETFRotationBacktest(
         }
         
         if (useShortMomentum && i > shortLookbackDays) {
-          const shortReturn = codeData[i].price / codeData[i - shortLookbackDays].price - 1;
+          const shortPrice = codeData[i - shortLookbackDays].price;
+          if (shortPrice === null) return;
+          const shortReturn = currentPrice / shortPrice - 1;
           if (shortReturn < shortMomentumThreshold) {
             return;
           }
         }
         
         if (useMaFilter && i >= maLongPeriod) {
-          const maShortPrices = codeData.slice(i - maShortPeriod, i).map(d => d.price);
-          const maLongPrices = codeData.slice(i - maLongPeriod, i).map(d => d.price);
+          const maShortPrices = codeData.slice(i - maShortPeriod, i).map(d => d.price).filter((p): p is number => p !== null);
+          const maLongPrices = codeData.slice(i - maLongPeriod, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (maShortPrices.length < maShortPeriod || maLongPrices.length < maLongPeriod) return;
           const maShort = maShortPrices.reduce((a, b) => a + b, 0) / maShortPeriod;
           const maLong = maLongPrices.reduce((a, b) => a + b, 0) / maLongPeriod;
           
@@ -489,11 +490,14 @@ function runETFRotationBacktest(
         }
         
         if (useRsiFilter && i >= rsiPeriod + 5) {
-          const rsiPrices = codeData.slice(i - rsiPeriod - 5, i).map(d => d.price);
+          const rsiPrices = codeData.slice(i - rsiPeriod - 5, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (rsiPrices.length < rsiPeriod + 5) return;
           const rsiValues = calculateRSI(rsiPrices, rsiPeriod);
           if (rsiValues.length > 0 && rsiValues[rsiValues.length - 1] > rsiThreshold) {
-            const ma5 = codeData.slice(i - 5, i).map(d => d.price).reduce((a, b) => a + b, 0) / 5;
-            if (codeData[i].price < ma5) {
+            const ma5Prices = codeData.slice(i - 5, i).map(d => d.price).filter((p): p is number => p !== null);
+            if (ma5Prices.length < 5) return;
+            const ma5 = ma5Prices.reduce((a, b) => a + b, 0) / 5;
+            if (currentPrice < ma5) {
               return;
             }
           }
@@ -507,10 +511,12 @@ function runETFRotationBacktest(
         
         let atr = 0;
         if (useAtrStop && i >= atrPeriod + 1) {
-          const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 1.01);
-          const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 0.99);
-          const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price);
-          atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+          const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 1.01);
+          const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 0.99);
+          const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null);
+          if (histHighs.length >= atrPeriod && histLows.length >= atrPeriod && histCloses.length >= atrPeriod) {
+            atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+          }
         }
         
         scores.push({ code, score, atr });
@@ -588,35 +594,37 @@ function runETFRotationBacktest(
         if (useAtrStop && code !== defensiveEtf) {
           const codeData = priceData[code];
           if (codeData && i >= atrPeriod + 1) {
-            const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 1.01);
-            const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price * 0.99);
-            const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price);
-            const atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
+            const histHighs = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 1.01);
+            const histLows = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null).map(p => p * 0.99);
+            const histCloses = codeData.slice(i - atrPeriod - 1, i).map(d => d.price).filter((p): p is number => p !== null);
+            if (histHighs.length >= atrPeriod && histLows.length >= atrPeriod && histCloses.length >= atrPeriod) {
+              const atr = calculateATR(histHighs, histLows, histCloses, atrPeriod);
             
-            if (atr > 0) {
-              const atrStop = atrTrailingStop 
-                ? pos.highestPrice - atrMultiplier * atr 
-                : pos.costPrice - atrMultiplier * atr;
-              
-              if (price < atrStop) {
-                const sellAmount = pos.shares * price;
-                const commission = sellAmount * COMMISSION_RATE;
-                const stampDuty = sellAmount * STAMP_DUTY_RATE;
+              if (atr > 0) {
+                const atrStop = atrTrailingStop 
+                  ? pos.highestPrice - atrMultiplier * atr 
+                  : pos.costPrice - atrMultiplier * atr;
                 
-                cash += sellAmount - commission - stampDuty;
-                
-                trades.push({
-                  date,
-                  type: 'sell',
-                  code,
-                  name: getName(code),
-                  price,
-                  shares: pos.shares,
-                  amount: sellAmount,
-                  commission,
-                });
-                
-                positions.delete(code);
+                if (price < atrStop) {
+                  const sellAmount = pos.shares * price;
+                  const commission = sellAmount * COMMISSION_RATE;
+                  const stampDuty = sellAmount * STAMP_DUTY_RATE;
+                  
+                  cash += sellAmount - commission - stampDuty;
+                  
+                  trades.push({
+                    date,
+                    type: 'sell',
+                    code,
+                    name: getName(code),
+                    price,
+                    shares: pos.shares,
+                    amount: sellAmount,
+                    commission,
+                  });
+                  
+                  positions.delete(code);
+                }
               }
             }
           }
@@ -641,7 +649,8 @@ function runETFRotationBacktest(
               code, 
               shares, 
               costPrice: price,
-              highestPrice: price 
+              highestPrice: price,
+              name: getName(code),
             });
             
             trades.push({
@@ -660,10 +669,30 @@ function runETFRotationBacktest(
     }
     
     let portfolioValue = cash;
+    const positionItems: PositionItem[] = [];
+    
     positions.forEach((pos, code) => {
       const price = getPriceSafely(priceData, code, i);
       if (price !== null) {
-        portfolioValue += pos.shares * price;
+        const marketValue = pos.shares * price;
+        portfolioValue += marketValue;
+        
+        const profit = (price - pos.costPrice) * pos.shares;
+        const dailyProfit = pos.prevMarketValue ? marketValue - pos.prevMarketValue : profit;
+        const profitPct = pos.costPrice > 0 ? ((price / pos.costPrice) - 1) * 100 : 0;
+        
+        positionItems.push({
+          code,
+          name: pos.name || getName(code),
+          shares: pos.shares,
+          price,
+          marketValue,
+          profit,
+          dailyProfit,
+          profitPct,
+        });
+        
+        pos.prevMarketValue = marketValue;
       }
     });
     
@@ -672,325 +701,22 @@ function runETFRotationBacktest(
       value: portfolioValue,
       return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
     });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runDualMABacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const fastPeriod = (config.parameters?.fast_period as number) || 10;
-  const slowPeriod = (config.parameters?.slow_period as number) || 30;
-  const maType = (config.parameters?.ma_type as string) || 'SMA';
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const prices = codeData.map(d => d.price);
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  const fastMA = maType === 'EMA' ? calculateEMA(prices, fastPeriod) : calculateSMA(prices, fastPeriod);
-  const slowMA = maType === 'EMA' ? calculateEMA(prices, slowPeriod) : calculateSMA(prices, slowPeriod);
-  
-  let cash = config.initialCapital;
-  let position = 0;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  const trades: Trade[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = prices[i];
-    if (typeof price !== 'number' || isNaN(price)) continue;
     
-    if (i > 0 && !isNaN(fastMA[i]) && !isNaN(slowMA[i])) {
-      if (fastMA[i] > slowMA[i] && fastMA[i - 1] <= slowMA[i - 1] && position === 0) {
-        const shares = Math.floor(cash / price / 100) * 100;
-        if (shares >= 100) {
-          const buyAmount = shares * price;
-          const commission = buyAmount * COMMISSION_RATE;
-          
-          cash -= buyAmount + commission;
-          position = shares;
-          
-          trades.push({
-            date: dates[i],
-            type: 'buy',
-            code: targetCode,
-            name: getName(targetCode),
-            price,
-            shares,
-            amount: buyAmount,
-            commission,
-          });
-        }
-      }
-      else if (fastMA[i] < slowMA[i] && fastMA[i - 1] >= slowMA[i - 1] && position > 0) {
-        const sellAmount = position * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date: dates[i],
-          type: 'sell',
-          code: targetCode,
-          name: getName(targetCode),
-          price,
-          shares: position,
-          amount: sellAmount,
-          commission,
-        });
-        
-        position = 0;
-      }
-    }
+    const totalProfit = portfolioValue - config.initialCapital;
+    const prevTotalValue = i > 0 ? equityCurve[i - 1].value : config.initialCapital;
+    const totalDailyProfit = portfolioValue - prevTotalValue;
     
-    const portfolioValue = cash + position * price;
-    equityCurve.push({
-      date: dates[i],
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
+    dailyPositions.push({
+      date,
+      positions: positionItems,
+      cash,
+      totalValue: portfolioValue,
+      totalProfit,
+      totalDailyProfit,
     });
   }
   
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runRSIBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const rsiPeriod = (config.parameters?.rsi_period as number) || 14;
-  const oversold = (config.parameters?.oversold as number) || 30;
-  const overbought = (config.parameters?.overbought as number) || 70;
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const prices = codeData.map(d => d.price);
-  const rsi = calculateRSI(prices, rsiPeriod);
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  let cash = config.initialCapital;
-  let position = 0;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  const trades: Trade[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = prices[i];
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    if (!isNaN(rsi[i])) {
-      if (rsi[i] < oversold && position === 0) {
-        const shares = Math.floor(cash / price / 100) * 100;
-        if (shares >= 100) {
-          const buyAmount = shares * price;
-          const commission = buyAmount * COMMISSION_RATE;
-          
-          cash -= buyAmount + commission;
-          position = shares;
-          
-          trades.push({
-            date: dates[i],
-            type: 'buy',
-            code: targetCode,
-            name: getName(targetCode),
-            price,
-            shares,
-            amount: buyAmount,
-            commission,
-          });
-        }
-      }
-      else if (rsi[i] > overbought && position > 0) {
-        const sellAmount = position * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date: dates[i],
-          type: 'sell',
-          code: targetCode,
-          name: getName(targetCode),
-          price,
-          shares: position,
-          amount: sellAmount,
-          commission,
-        });
-        
-        position = 0;
-      }
-    }
-    
-    const portfolioValue = cash + position * price;
-    equityCurve.push({
-      date: dates[i],
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
-    });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runMACDBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  return runDualMABacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
-}
-
-function runBollingerBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  return runRSIBacktest(config, priceData, dates, names, actualStartDate, actualEndDate);
-}
-
-function runGridBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const firstPrice = codeData[0]?.price;
-  if (!firstPrice || firstPrice <= 0) {
-    return createEmptyResult(config);
-  }
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = codeData[i]?.price;
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    equityCurve.push({
-      date: dates[i],
-      value: shares * price,
-      return: i > 0 && codeData[i - 1]?.price ? ((price / codeData[i - 1].price) - 1) * 100 : 0,
-    });
-  }
-  
-  const trades: Trade[] = [
-    {
-      date: dates[0],
-      type: 'buy',
-      code: targetCode,
-      name: getName(targetCode),
-      price: firstPrice,
-      shares,
-      amount: shares * firstPrice,
-      commission: shares * firstPrice * COMMISSION_RATE,
-    },
-  ];
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
-
-function runSimpleBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string
-): BacktestResult {
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const targetCode = codes[0];
-  const codeData = priceData[targetCode];
-  if (!codeData || codeData.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  const firstPrice = codeData[0]?.price;
-  if (!firstPrice || firstPrice <= 0) {
-    return createEmptyResult(config);
-  }
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  const shares = Math.floor(config.initialCapital / firstPrice / 100) * 100;
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  for (let i = 0; i < dates.length; i++) {
-    const price = codeData[i]?.price;
-    if (typeof price !== 'number' || isNaN(price)) continue;
-    
-    equityCurve.push({
-      date: dates[i],
-      value: shares * price,
-      return: i > 0 && codeData[i - 1]?.price ? ((price / codeData[i - 1].price) - 1) * 100 : 0,
-    });
-  }
-  
-  const trades: Trade[] = [
-    {
-      date: dates[0],
-      type: 'buy',
-      code: targetCode,
-      name: getName(targetCode),
-      price: firstPrice,
-      shares,
-      amount: shares * firstPrice,
-      commission: shares * firstPrice * COMMISSION_RATE,
-    },
-  ];
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
+  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate, dailyPositions);
 }
 
 function createEmptyResult(config: BacktestConfig): BacktestResult {
@@ -1011,6 +737,7 @@ function createEmptyResult(config: BacktestConfig): BacktestResult {
     drawdownSeries: [],
     trades: [],
     monthlyReturns: [],
+    dailyPositions: [],
   };
 }
 
@@ -1019,7 +746,8 @@ function calculateMetrics(
   trades: Trade[],
   config: BacktestConfig,
   actualStartDate?: string,
-  actualEndDate?: string
+  actualEndDate?: string,
+  dailyPositions: DailyPosition[] = []
 ): BacktestResult {
   if (equityCurve.length === 0) {
     return createEmptyResult(config);
@@ -1091,316 +819,7 @@ function calculateMetrics(
     }),
     trades,
     monthlyReturns,
+    dailyPositions,
   };
 }
 
-function runLargeCapLowDrawdownBacktest(
-  config: BacktestConfig,
-  priceData: Record<string, PriceData[]>,
-  dates: string[],
-  names: Record<string, string>,
-  actualStartDate: string,
-  actualEndDate: string,
-  onProgress?: (update: BacktestProgressUpdate) => void
-): BacktestResult {
-  const maxPositions = (config.parameters?.max_positions as number) || 3;
-  const stopLossRatio = (config.parameters?.stop_loss_ratio as number) || 0.05;
-  const takeProfitRatio = (config.parameters?.take_profit_ratio as number) || 0.35;
-  const drawdownLockThreshold = (config.parameters?.drawdown_lock_threshold as number) || 0.10;
-  const useRsrsTiming = config.parameters?.use_rsrs_timing !== false;
-  const usePartialUnlock = config.parameters?.use_partial_unlock !== false;
-  const rsrsBuyThreshold = (config.parameters?.rsrs_buy_threshold as number) || 0.7;
-  
-  const codes = Object.keys(priceData);
-  if (codes.length === 0 || dates.length === 0) {
-    return createEmptyResult(config);
-  }
-  
-  let cash = config.initialCapital;
-  const positions: Map<string, { code: string; shares: number; costPrice: number; highestPrice: number }> = new Map();
-  const trades: Trade[] = [];
-  const equityCurve: { date: string; value: number; return: number }[] = [];
-  
-  let maxTotalValue = config.initialCapital;
-  let drawdownLock = false;
-  let partialUnlock = false;
-  let unlockCooldownDays = 0;
-  const unlockCooldownMax = 10;
-  const fullUnlockDrawdown = 0.05;
-  const unlockPositionRatio = 0.3;
-  
-  const getName = (code: string) => names[code] || codeNameMap[code] || code;
-  
-  function calculateDrawdown(currentValue: number): number {
-    if (currentValue > maxTotalValue) {
-      maxTotalValue = currentValue;
-    }
-    return (maxTotalValue - currentValue) / maxTotalValue;
-  }
-  
-  function calculateStockScoreDetail(code: string, currentIndex: number): StockScoreDetail | null {
-    const data = priceData[code];
-    if (!data || currentIndex < 30) return null;
-    
-    const closes = data.slice(0, currentIndex + 1).map(d => d.price);
-    if (closes.length < 30) return null;
-    
-    const scores = {
-      momentum5: 0,
-      momentum20: 0,
-      trendStrength: 0,
-      volumeRatio: 0,
-      volatility: 0,
-      marketCap: 0,
-    };
-    
-    const momentum5 = (closes[closes.length - 1] / closes[closes.length - 6]) - 1;
-    if (momentum5 > 0.05) scores.momentum5 = 25;
-    else if (momentum5 > 0.02) scores.momentum5 = 15;
-    else if (momentum5 > 0) scores.momentum5 = 5;
-    
-    const momentum20 = (closes[closes.length - 1] / closes[closes.length - 21]) - 1;
-    if (momentum20 > 0.10) scores.momentum20 = 20;
-    else if (momentum20 > 0.05) scores.momentum20 = 12;
-    else if (momentum20 > 0) scores.momentum20 = 5;
-    
-    const ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-    const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const trendStrengthRatio = (ma5 - ma20) / ma20;
-    if (trendStrengthRatio > 0.01) scores.trendStrength = 25;
-    else if (trendStrengthRatio > 0.005) scores.trendStrength = 15;
-    else if (trendStrengthRatio > 0) scores.trendStrength = 5;
-    
-    const returns = [];
-    for (let i = 1; i < Math.min(20, closes.length); i++) {
-      returns.push((closes[closes.length - i] - closes[closes.length - i - 1]) / closes[closes.length - i - 1]);
-    }
-    const volatilityRatio = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
-    if (volatilityRatio < 0.05) scores.volatility = 10;
-    else if (volatilityRatio < 0.08) scores.volatility = 5;
-    
-    const totalScore = scores.momentum5 + scores.momentum20 + scores.trendStrength + scores.volumeRatio + scores.volatility + scores.marketCap;
-    
-    return {
-      code,
-      name: getName(code),
-      scores,
-      totalScore,
-      rank: 0,
-      isSelected: false,
-    };
-  }
-  
-  for (let i = 0; i < dates.length; i++) {
-    const date = dates[i];
-    
-    let portfolioValue = cash;
-    positions.forEach((pos, code) => {
-      const price = getPriceSafely(priceData, code, i);
-      if (price !== null) {
-        portfolioValue += pos.shares * price;
-      }
-    });
-    
-    const drawdown = calculateDrawdown(portfolioValue);
-    
-    if (drawdown >= drawdownLockThreshold) {
-      if (usePartialUnlock && unlockCooldownDays > 0) {
-        unlockCooldownDays--;
-      } else {
-        for (const [code, pos] of positions) {
-          const price = getPriceSafely(priceData, code, i);
-          if (price === null) continue;
-          
-          const sellAmount = pos.shares * price;
-          const commission = sellAmount * COMMISSION_RATE;
-          const stampDuty = sellAmount * STAMP_DUTY_RATE;
-          
-          cash += sellAmount - commission - stampDuty;
-          
-          trades.push({
-            date,
-            type: 'sell',
-            code,
-            name: getName(code),
-            price,
-            shares: pos.shares,
-            amount: sellAmount,
-            commission,
-          });
-        }
-        positions.clear();
-        drawdownLock = true;
-        partialUnlock = false;
-      }
-    }
-    
-    if (drawdownLock) {
-      if (usePartialUnlock && partialUnlock) {
-        if (unlockCooldownDays > 0) {
-          unlockCooldownDays--;
-        }
-        if (drawdown < fullUnlockDrawdown) {
-          partialUnlock = false;
-          drawdownLock = false;
-        }
-      } else if (drawdown < drawdownLockThreshold * 0.5) {
-        if (usePartialUnlock) {
-          partialUnlock = true;
-          unlockCooldownDays = unlockCooldownMax;
-        } else {
-          drawdownLock = false;
-        }
-      }
-    }
-    
-    for (const [code, pos] of positions) {
-      const price = getPriceSafely(priceData, code, i);
-      if (price === null) continue;
-      
-      if (price > pos.highestPrice) {
-        pos.highestPrice = price;
-      }
-      
-      const profitRatio = (price - pos.costPrice) / pos.costPrice;
-      
-      if (profitRatio >= takeProfitRatio || profitRatio <= -stopLossRatio) {
-        const sellAmount = pos.shares * price;
-        const commission = sellAmount * COMMISSION_RATE;
-        const stampDuty = sellAmount * STAMP_DUTY_RATE;
-        
-        cash += sellAmount - commission - stampDuty;
-        
-        trades.push({
-          date,
-          type: 'sell',
-          code,
-          name: getName(code),
-          price,
-          shares: pos.shares,
-          amount: sellAmount,
-          commission,
-        });
-        
-        positions.delete(code);
-      }
-    }
-    
-    if (!drawdownLock || partialUnlock) {
-      const currentPositions = positions.size;
-      
-      if (currentPositions < maxPositions) {
-        const scoreDetails: StockScoreDetail[] = [];
-        
-        for (const code of codes) {
-          if (!positions.has(code)) {
-            const detail = calculateStockScoreDetail(code, i);
-            if (detail && detail.totalScore > 0) {
-              scoreDetails.push(detail);
-            }
-          }
-        }
-        
-        scoreDetails.sort((a, b) => b.totalScore - a.totalScore);
-        scoreDetails.forEach((detail, index) => {
-          detail.rank = index + 1;
-        });
-        
-        const buyCandidates = scoreDetails.slice(0, maxPositions - currentPositions);
-        buyCandidates.forEach(detail => detail.isSelected = true);
-        
-        const dailyResult: DailySelectionResult = {
-          date,
-          marketStatus: drawdownLock 
-            ? (partialUnlock ? 'partial_unlock' : 'drawdown_lock') 
-            : 'normal',
-          candidates: scoreDetails.slice(0, 10),
-          selectedStocks: buyCandidates.map(c => c.code),
-          trades: [],
-          portfolioValue,
-          drawdown: drawdown * 100,
-          cashRatio: (cash / portfolioValue) * 100,
-        };
-        
-        if (onProgress && i % 5 === 0) {
-          onProgress({
-            currentIndex: i,
-            totalDays: dates.length,
-            currentDate: date,
-            percent: Math.round((i / dates.length) * 100),
-            dailyResult,
-          });
-        }
-        
-        let availableCash = cash;
-        if (partialUnlock) {
-          const currentPositionValue = Array.from(positions.values()).reduce((sum, pos) => {
-            const price = getPriceSafely(priceData, pos.code, i);
-            return sum + (price !== null ? pos.shares * price : 0);
-          }, 0);
-          const maxPositionValue = portfolioValue * unlockPositionRatio;
-          availableCash = Math.min(cash, maxPositionValue - currentPositionValue);
-        }
-        
-        const cashPerStock = buyCandidates.length > 0 ? availableCash / buyCandidates.length * 0.95 : 0;
-        
-        for (const candidate of buyCandidates) {
-          if (positions.size >= maxPositions) break;
-          
-          const code = candidate.code;
-          const price = getPriceSafely(priceData, code, i);
-          if (price === null || price <= 0) continue;
-          
-          const shares = Math.floor(cashPerStock / price / 100) * 100;
-          
-          if (shares >= 100 && cash >= shares * price * (1 + COMMISSION_RATE)) {
-            const buyAmount = shares * price;
-            const commission = buyAmount * COMMISSION_RATE;
-            
-            cash -= buyAmount + commission;
-            positions.set(code, {
-              code,
-              shares,
-              costPrice: price,
-              highestPrice: price,
-            });
-            
-            trades.push({
-              date,
-              type: 'buy',
-              code,
-              name: getName(code),
-              price,
-              shares,
-              amount: buyAmount,
-              commission,
-            });
-            
-            dailyResult.trades.push({
-              action: 'buy',
-              code,
-              name: getName(code),
-              reason: `得分排名第${candidate.rank}，总分${candidate.totalScore}分`,
-            });
-          }
-        }
-      }
-    }
-    
-    portfolioValue = cash;
-    positions.forEach((pos, code) => {
-      const price = getPriceSafely(priceData, code, i);
-      if (price !== null) {
-        portfolioValue += pos.shares * price;
-      }
-    });
-    
-    equityCurve.push({
-      date,
-      value: portfolioValue,
-      return: i > 0 ? ((portfolioValue / equityCurve[i - 1].value) - 1) * 100 : 0,
-    });
-  }
-  
-  return calculateMetrics(equityCurve, trades, config, actualStartDate, actualEndDate);
-}
