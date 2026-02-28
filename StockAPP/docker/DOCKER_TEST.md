@@ -119,7 +119,7 @@ curl http://localhost:8000/
 ### 4.3 API 文档
 
 ```bash
-curl http://localhost:8000/docs
+curl <BACKEND_BASE_URL>/docs
 ```
 
 **预期结果:** 返回 Swagger UI HTML
@@ -128,13 +128,13 @@ curl http://localhost:8000/docs
 
 ```bash
 # 获取 ETF 列表
-curl http://localhost:8000/api/data/etf/list
+curl <BACKEND_BASE_URL>/api/data/etf/list
 
 # 获取策略列表
-curl http://localhost:8000/api/strategies
+curl <BACKEND_BASE_URL>/api/strategies
 
 # 获取数据更新状态
-curl http://localhost:8000/api/data-update/status
+curl <BACKEND_BASE_URL>/api/data-update/status
 ```
 
 ---
@@ -275,7 +275,7 @@ docker stats --no-stream
 
 ```bash
 # 测试 API 响应时间
-curl -o /dev/null -s -w "%{time_total}\n" http://localhost:8000/api/data/etf/list
+curl -o /dev/null -s -w "%{time_total}\n" <BACKEND_BASE_URL>/api/data/etf/list
 ```
 
 **预期结果:** < 1 秒

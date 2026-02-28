@@ -1,30 +1,96 @@
-import React, { useState } from 'react';
-import { Download, Database, Calendar, FileText } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Download, Database, Calendar, FileText, Loader2 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Progress } from '../ui/progress';
 import { Badge } from '../ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { apiClient, type ApiUpdateStatus, type CacheInfo, type ETFDataResponse } from '../../utils/apiClient';
+import { etfPool } from '../../utils/strategyConfig';
+
+function dateToISO(date: Date): string {
+  return date.toISOString().split('T')[0];
+}
 
 export default function DataManagement() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedCode, setSelectedCode] = useState('510300');
+  const [updateStatus, setUpdateStatus] = useState<ApiUpdateStatus | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
+  const [preview, setPreview] = useState<ETFDataResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const dataInfo = [
-    { name: '沪深300ETF (510300)', status: '已缓存', lastUpdate: '2024-02-20', size: '2.3 MB' },
-    { name: '中证500ETF (510500)', status: '已缓存', lastUpdate: '2024-02-20', size: '2.1 MB' },
-    { name: '创业板ETF (159915)', status: '已缓存', lastUpdate: '2024-02-20', size: '1.8 MB' },
-    { name: '黄金ETF (518880)', status: '已缓存', lastUpdate: '2024-02-20', size: '1.5 MB' },
-    { name: '纳指ETF (513100)', status: '未缓存', lastUpdate: '-', size: '-' },
-  ];
+  const previewRange = useMemo(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 60);
+    return {
+      startDate: dateToISO(start),
+      endDate: dateToISO(end),
+    };
+  }, []);
+
+  const loadStatusAndCache = useCallback(async () => {
+    setIsRefreshing(true);
+    setError(null);
+    try {
+      const [status, cache] = await Promise.all([
+        apiClient.getUpdateStatus(),
+        apiClient.getCacheInfo(),
+      ]);
+      setUpdateStatus(status);
+      setCacheInfo(cache);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载状态失败');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, []);
+
+  const loadPreview = useCallback(async () => {
+    try {
+      const data = await apiClient.getETFData(selectedCode, previewRange.startDate, previewRange.endDate);
+      setPreview(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载行情预览失败');
+      setPreview(null);
+    }
+  }, [selectedCode, previewRange.endDate, previewRange.startDate]);
+
+  useEffect(() => {
+    void loadStatusAndCache();
+  }, [loadStatusAndCache]);
+
+  useEffect(() => {
+    void loadPreview();
+  }, [loadPreview]);
 
   const handleDownload = async () => {
     setIsDownloading(true);
-    for (let i = 0; i <= 100; i += 10) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      setDownloadProgress(i);
+    setDownloadProgress(10);
+    setError(null);
+
+    try {
+      await apiClient.triggerUpdate();
+      setDownloadProgress(60);
+      await loadStatusAndCache();
+      await loadPreview();
+      setDownloadProgress(100);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '触发更新失败');
+    } finally {
+      setTimeout(() => {
+        setIsDownloading(false);
+        setDownloadProgress(0);
+      }, 400);
     }
-    setIsDownloading(false);
   };
+
+  const latestRows = preview?.data?.slice(-5).reverse() || [];
+  const cachedCount = cacheInfo?.file_count ?? 0;
+  const totalSize = cacheInfo?.total_size_mb ?? 0;
 
   return (
     <div className="space-y-6">
@@ -32,6 +98,14 @@ export default function DataManagement() {
         <h1 className="text-3xl mb-2 text-foreground">📦 数据管理</h1>
         <p className="text-muted-foreground">管理历史行情数据和缓存</p>
       </div>
+
+      {error && (
+        <Card className="border-red-300 bg-red-50 dark:bg-red-900/20">
+          <CardContent className="pt-6 text-sm text-red-700 dark:text-red-300">
+            {error}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card>
@@ -48,12 +122,16 @@ export default function DataManagement() {
                 <span className="font-medium text-foreground">efinance</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">更新频率:</span>
-                <span className="font-medium text-foreground">日级别</span>
+                <span className="text-muted-foreground">更新服务:</span>
+                <span className={`font-medium ${updateStatus?.running ? 'text-green-600' : 'text-orange-600'}`}>
+                  {updateStatus?.running ? '运行中' : '未运行'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">数据类型:</span>
-                <span className="font-medium text-foreground">OHLCV</span>
+                <span className="text-muted-foreground">最后更新:</span>
+                <span className="font-medium text-foreground">
+                  {updateStatus?.last_update ? updateStatus.last_update.slice(0, 19).replace('T', ' ') : '-'}
+                </span>
               </div>
             </div>
           </CardContent>
@@ -70,15 +148,15 @@ export default function DataManagement() {
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">开始日期:</span>
-                <span className="font-medium text-foreground">2020-01-01</span>
+                <span className="font-medium text-foreground">{previewRange.startDate}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">结束日期:</span>
-                <span className="font-medium text-foreground">2024-02-20</span>
+                <span className="font-medium text-foreground">{previewRange.endDate}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">交易日数:</span>
-                <span className="font-medium text-foreground">976 天</span>
+                <span className="text-muted-foreground">可用记录:</span>
+                <span className="font-medium text-foreground">{preview?.data?.length ?? 0} 条</span>
               </div>
             </div>
           </CardContent>
@@ -94,16 +172,18 @@ export default function DataManagement() {
           <CardContent>
             <div className="space-y-2">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">已缓存:</span>
-                <span className="font-medium text-green-500">4 个ETF</span>
+                <span className="text-muted-foreground">缓存文件:</span>
+                <span className="font-medium text-foreground">{cachedCount}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">未缓存:</span>
-                <span className="font-medium text-orange-500">1 个ETF</span>
+                <span className="text-muted-foreground">缓存大小:</span>
+                <span className="font-medium text-foreground">{totalSize.toFixed(2)} MB</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">总大小:</span>
-                <span className="font-medium text-foreground">7.7 MB</span>
+                <span className="text-muted-foreground">缓存目录:</span>
+                <span className="font-medium text-foreground text-xs truncate max-w-[170px]">
+                  {cacheInfo?.cache_dir ?? '-'}
+                </span>
               </div>
             </div>
           </CardContent>
@@ -113,12 +193,12 @@ export default function DataManagement() {
       <Card>
         <CardHeader>
           <CardTitle>数据下载</CardTitle>
-          <CardDescription>下载或更新历史行情数据</CardDescription>
+          <CardDescription>触发后端数据更新任务</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="p-4 bg-primary/10 border border-primary/20 rounded-lg">
             <p className="text-sm text-foreground">
-              💡 提示: 首次使用需要下载历史数据，之后会自动使用缓存数据。建议定期更新数据以保持最新。
+              更新会在后端后台执行。完成后请点击“刷新状态”查看缓存变化。
             </p>
           </div>
 
@@ -126,18 +206,28 @@ export default function DataManagement() {
             <div>
               <Progress value={downloadProgress} className="w-full" />
               <p className="text-sm text-muted-foreground mt-2 text-center">
-                正在下载数据... {downloadProgress}%
+                正在触发更新... {downloadProgress}%
               </p>
             </div>
           ) : (
-            <Button
-              size="lg"
-              onClick={handleDownload}
-              className="w-full bg-primary hover:bg-primary/90"
-            >
-              <Download className="mr-2 h-5 w-5" />
-              下载/更新所有数据
-            </Button>
+            <div className="flex gap-3">
+              <Button
+                size="lg"
+                onClick={handleDownload}
+                className="flex-1 bg-primary hover:bg-primary/90"
+              >
+                <Download className="mr-2 h-5 w-5" />
+                触发数据更新
+              </Button>
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={() => void loadStatusAndCache()}
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : '刷新状态'}
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -145,36 +235,42 @@ export default function DataManagement() {
       <Card>
         <CardHeader>
           <CardTitle>数据缓存列表</CardTitle>
-          <CardDescription>查看已缓存的数据详情</CardDescription>
+          <CardDescription>更新任务配置与缓存快照</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {dataInfo.map((item, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between p-4 border border-border rounded-lg hover:bg-accent"
-              >
-                <div className="flex items-center space-x-4">
-                  <Database className="h-8 w-8 text-muted-foreground" />
-                  <div>
-                    <div className="font-medium text-foreground">{item.name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      最后更新: {item.lastUpdate} · 大小: {item.size}
-                    </div>
+            <div className="flex items-center justify-between p-4 border border-border rounded-lg hover:bg-accent">
+              <div className="flex items-center space-x-4">
+                <Database className="h-8 w-8 text-muted-foreground" />
+                <div>
+                  <div className="font-medium text-foreground">ETF更新清单</div>
+                  <div className="text-sm text-muted-foreground">
+                    当前计划更新 {updateStatus?.etf_codes_count ?? 0} 个 ETF
                   </div>
                 </div>
-                <Badge
-                  variant={item.status === '已缓存' ? 'default' : 'secondary'}
-                  className={
-                    item.status === '已缓存'
-                      ? 'bg-green-500/10 text-green-500'
-                      : 'bg-muted text-muted-foreground'
-                  }
-                >
-                  {item.status}
-                </Badge>
               </div>
-            ))}
+              <Badge variant="outline" className="bg-blue-100 text-blue-700 border-blue-300">
+                活跃
+              </Badge>
+            </div>
+
+            <div className="flex items-center justify-between p-4 border border-border rounded-lg hover:bg-accent">
+              <div className="flex items-center space-x-4">
+                <FileText className="h-8 w-8 text-muted-foreground" />
+                <div>
+                  <div className="font-medium text-foreground">缓存文件</div>
+                  <div className="text-sm text-muted-foreground">
+                    共 {cachedCount} 个缓存文件，约 {totalSize.toFixed(2)} MB
+                  </div>
+                </div>
+              </div>
+              <Badge
+                variant={cachedCount > 0 ? 'default' : 'secondary'}
+                className={cachedCount > 0 ? 'bg-green-100 text-green-700 border-green-300' : ''}
+              >
+                {cachedCount > 0 ? '已缓存' : '空'}
+              </Badge>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -182,9 +278,24 @@ export default function DataManagement() {
       <Card>
         <CardHeader>
           <CardTitle>数据预览</CardTitle>
-          <CardDescription>查看最近的行情数据</CardDescription>
+          <CardDescription>查看最近行情数据（按 ETF 选择）</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="max-w-sm">
+            <Select value={selectedCode} onValueChange={setSelectedCode}>
+              <SelectTrigger>
+                <SelectValue placeholder="选择ETF代码" />
+              </SelectTrigger>
+              <SelectContent>
+                {etfPool.map((etf) => (
+                  <SelectItem key={etf.code} value={etf.code}>
+                    {etf.code} - {etf.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted border-b">
@@ -198,22 +309,24 @@ export default function DataManagement() {
                 </tr>
               </thead>
               <tbody>
-                {[
-                  { date: '2024-02-20', open: 3.125, high: 3.156, low: 3.102, close: 3.145, volume: '1.2亿' },
-                  { date: '2024-02-19', open: 3.098, high: 3.134, low: 3.089, close: 3.120, volume: '1.0亿' },
-                  { date: '2024-02-18', open: 3.110, high: 3.128, low: 3.095, close: 3.102, volume: '0.9亿' },
-                  { date: '2024-02-17', open: 3.095, high: 3.125, low: 3.087, close: 3.115, volume: '1.1亿' },
-                  { date: '2024-02-16', open: 3.089, high: 3.102, low: 3.075, close: 3.092, volume: '0.8亿' },
-                ].map((row, index) => (
-                  <tr key={index} className="border-b hover:bg-muted/50">
-                    <td className="p-3 font-mono text-foreground">{row.date}</td>
-                    <td className="p-3 text-right font-mono text-foreground">{row.open}</td>
-                    <td className="p-3 text-right font-mono text-red-500">{row.high}</td>
-                    <td className="p-3 text-right font-mono text-green-500">{row.low}</td>
-                    <td className="p-3 text-right font-mono text-foreground">{row.close}</td>
-                    <td className="p-3 text-right text-muted-foreground">{row.volume}</td>
+                {latestRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-6 text-center text-muted-foreground">
+                      暂无可展示数据
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  latestRows.map((row, index) => (
+                    <tr key={index} className="border-b hover:bg-muted/50">
+                      <td className="p-3 font-mono text-foreground">{row.date}</td>
+                      <td className="p-3 text-right font-mono text-foreground">{row.open.toFixed(3)}</td>
+                      <td className="p-3 text-right font-mono text-red-500">{row.high.toFixed(3)}</td>
+                      <td className="p-3 text-right font-mono text-green-500">{row.low.toFixed(3)}</td>
+                      <td className="p-3 text-right font-mono text-foreground">{row.close.toFixed(3)}</td>
+                      <td className="p-3 text-right text-muted-foreground">{row.volume.toLocaleString()}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

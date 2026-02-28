@@ -18,7 +18,7 @@ import hashlib
 import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -48,19 +48,73 @@ except ImportError:
     HAS_AKSHARE_PROXY_PATCH = False
 
 
+def _load_project_env() -> None:
+    """从项目根目录加载 .env（不覆盖已存在环境变量）"""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+    
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        
+        if not key:
+            continue
+        
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        
+        os.environ.setdefault(key, value)
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _env_int(key: str, default: int) -> int:
+    value = os.getenv(key)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+_load_project_env()
+
+
 @dataclass
 class DataConfig:
     """数据配置"""
     cache_dir: str = ""
-    cache_expire_hours: int = 4  # 缓存4小时，确保数据相对新鲜
+    cache_expire_hours: int = field(default_factory=lambda: _env_int("DATA_CACHE_EXPIRE_HOURS", 4))  # 缓存4小时，确保数据相对新鲜
     retry_times: int = 3
     retry_delay: float = 1.0
     request_delay: float = 0.3
-    proxy_host: str = "101.201.173.125"
-    proxy_auth_code: str = "20260227DWVU"
-    proxy_timeout: int = 30
-    enable_proxy: bool = False
-    enable_fallback: bool = True
+    proxy_host: str = field(default_factory=lambda: os.getenv("AKSHARE_PROXY_HOST", "101.201.173.125"))
+    proxy_auth_code: str = field(default_factory=lambda: os.getenv("PROXY_AUTH_CODE", ""))
+    proxy_timeout: int = field(default_factory=lambda: _env_int("AKSHARE_PROXY_TIMEOUT", 30))
+    enable_proxy: bool = field(default_factory=lambda: _env_bool("AKSHARE_ENABLE_PROXY", False))
+    enable_fallback: bool = field(default_factory=lambda: _env_bool("DATA_ENABLE_FALLBACK", True))
+    tushare_token: str = field(default_factory=lambda: os.getenv("TUSHARE_TOKEN", ""))
 
 
 class DataSource:
@@ -150,6 +204,17 @@ class DataSource:
         except Exception as e:
             print(f"⚠️ akshare代理补丁初始化失败: {e}")
             print("   将使用直接连接方式")
+    
+    def _resolve_tushare_token(self, token: Optional[str]) -> Optional[str]:
+        """
+        解析 tushare token
+        优先级: 显式传参 > DataConfig.tushare_token(.env) > None
+        """
+        if token and token.strip():
+            return token.strip()
+        if self.config.tushare_token and self.config.tushare_token.strip():
+            return self.config.tushare_token.strip()
+        return None
     
     def _get_cache_path(self, key: str) -> str:
         """获取缓存文件路径"""
@@ -722,9 +787,11 @@ class DataSource:
             if cached is not None:
                 return cached.tolist() if hasattr(cached, 'tolist') else list(cached)
         
-        if date is not None and HAS_TUSHARE and tushare_token:
+        resolved_tushare_token = self._resolve_tushare_token(tushare_token)
+        
+        if date is not None and HAS_TUSHARE and resolved_tushare_token:
             try:
-                pro = ts.pro_api(tushare_token)
+                pro = ts.pro_api(resolved_tushare_token)
                 ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
                 df = pro.index_weight(index_code=ts_code, start_date=date_str, end_date=date_str)
                 
@@ -806,10 +873,12 @@ class DataSource:
         
         result = {}
         
-        if HAS_TUSHARE and tushare_token:
+        resolved_tushare_token = self._resolve_tushare_token(tushare_token)
+        
+        if HAS_TUSHARE and resolved_tushare_token:
             try:
                 print(f"使用tushare获取{index_code}历史成分股...")
-                pro = ts.pro_api(tushare_token)
+                pro = ts.pro_api(resolved_tushare_token)
                 ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
                 
                 start_str = start_date.strftime("%Y%m%d")
@@ -850,10 +919,11 @@ class DataSource:
                 print(f"tushare获取历史成分股失败: {e}")
         
         print("警告: 未配置tushare token，无法获取历史成分股")
+        print("  可在项目根目录 .env 中配置: TUSHARE_TOKEN=你的token")
         print("  请注册tushare账号并获取token: https://tushare.pro/")
         print("  回测将使用当前成分股，可能存在前视偏差")
         
-        current_components = self.get_index_components(index_code, None, use_cache, tushare_token)
+        current_components = self.get_index_components(index_code, None, use_cache, resolved_tushare_token)
         if current_components:
             result[start_date.strftime("%Y-%m-%d")] = current_components
         

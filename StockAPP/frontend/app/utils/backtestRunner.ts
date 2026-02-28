@@ -9,7 +9,7 @@ import {
 const COMMISSION_RATE = 0.0003;
 const STAMP_DUTY_RATE = 0.001;
 
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 interface PriceData {
   date: string;
@@ -366,7 +366,7 @@ export async function runBacktestAsync(
 }
 
 export function runBacktest(config: BacktestConfig): BacktestResult {
-  return createEmptyResult(config);
+  throw new Error(`runBacktest 已废弃，请改用后端 API 或 runBacktestAsync。strategy=${config.strategy}`);
 }
 
 interface Position {
@@ -822,4 +822,3 @@ function calculateMetrics(
     dailyPositions,
   };
 }
-

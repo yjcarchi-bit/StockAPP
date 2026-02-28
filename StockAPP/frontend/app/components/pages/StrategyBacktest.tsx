@@ -8,7 +8,8 @@ import BacktestParams from '../backtest/BacktestParams';
 import StrategyParams from '../backtest/StrategyParams';
 import ETFSelector from '../backtest/ETFSelector';
 import BacktestResults from '../backtest/BacktestResults';
-import { runBacktestAsync } from '../../utils/backtestRunner';
+import { apiClient } from '../../utils/apiClient';
+import { adaptBacktestResult } from '../../utils/backtestApiAdapter';
 import type { BacktestResult } from '../../utils/backtestEngine';
 import { usePersistentState } from '../../hooks';
 
@@ -35,6 +36,23 @@ const DEFAULT_BACKTEST_PARAMS = {
   initialCapital: 100000,
   benchmark: '510300',
 };
+
+function normalizeStrategyParams(params: Record<string, any>): Record<string, any> {
+  const mapped = { ...params };
+  if (Object.prototype.hasOwnProperty.call(mapped, 'stop_loss')) {
+    mapped.stop_loss_ratio = mapped.stop_loss;
+    delete mapped.stop_loss;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_short_momentum')) {
+    mapped.use_short_momentum_filter = mapped.use_short_momentum;
+    delete mapped.use_short_momentum;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_atr_stop')) {
+    mapped.use_atr_stop_loss = mapped.use_atr_stop;
+    delete mapped.use_atr_stop;
+  }
+  return mapped;
+}
 
 export default function StrategyBacktest() {
   const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('backtest_strategy', 'etf_rotation');
@@ -117,51 +135,37 @@ export default function StrategyBacktest() {
       setProgress(20);
       setProgressText('正在从服务器获取历史数据...');
       addLog('info', '正在从服务器获取历史数据...');
-
-      const config = {
+      
+      setProgress(35);
+      setProgressText('正在提交回测请求...');
+      addLog('info', '正在提交回测请求...');
+      
+      const apiResult = await apiClient.runBacktest({
         strategy: selectedStrategy,
-        ...defaultBacktestConfig,
-        ...backtestParams,
-        parameters: strategyParams,
-        etfCodes: selectedETFs,
-      };
-
-      setProgress(40);
-      setProgressText('正在处理数据...');
-
-      const handleLog = (update: {
-        stage: 'data_fetch' | 'data_process' | 'backtest' | 'metrics';
-        message: string;
-        progress?: number;
-        total?: number;
-      }) => {
-        const stageNames: Record<string, string> = {
-          'data_fetch': '数据获取',
-          'data_process': '数据处理',
-          'backtest': '回测执行',
-          'metrics': '指标计算',
-        };
-        const prefix = `[${stageNames[update.stage]}] `;
-        addLog('info', prefix + update.message);
-        
-        if (update.progress !== undefined && update.total !== undefined) {
-          const percent = Math.round((update.progress / update.total) * 100);
-          setProgressText(`${update.message} (${percent}%)`);
-        }
-      };
-
-      const backtestResult = await runBacktestAsync(config, undefined, handleLog);
+        strategy_params: normalizeStrategyParams(strategyParams),
+        backtest_params: {
+          start_date: backtestParams.startDate,
+          end_date: backtestParams.endDate,
+          initial_capital: backtestParams.initialCapital,
+          commission_rate: defaultBacktestConfig.commission,
+          stamp_duty: defaultBacktestConfig.stampDuty,
+          slippage: defaultBacktestConfig.slippage,
+        },
+        etf_codes: selectedETFs,
+      });
+      
+      setProgress(75);
+      setProgressText('正在解析回测结果...');
+      addLog('info', '正在解析回测结果...');
+      
+      const backtestResult = adaptBacktestResult(apiResult);
       
       setProgress(100);
       setProgressText('回测完成!');
       addLog('success', '回测完成!');
       
-      if (backtestResult.dataInfo?.warning) {
-        addLog('warning', backtestResult.dataInfo.warning);
-      }
-      
-      if (backtestResult.dataInfo) {
-        addLog('info', `实际回测时间: ${backtestResult.dataInfo.actualStart} 至 ${backtestResult.dataInfo.actualEnd}`);
+      if (backtestResult.actualStartDate && backtestResult.actualEndDate) {
+        addLog('info', `实际回测时间: ${backtestResult.actualStartDate} 至 ${backtestResult.actualEndDate}`);
       }
       
       setResult(backtestResult);

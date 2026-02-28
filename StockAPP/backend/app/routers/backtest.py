@@ -4,7 +4,6 @@
 """
 
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
 import uuid
 import sys
 import os
@@ -18,11 +17,6 @@ from ..models import (
     BacktestResult,
     CompareResult,
     OptimizationResult,
-    Metrics,
-    EquityPoint,
-    Trade,
-    DailyPosition,
-    APIResponse,
 )
 
 router = APIRouter()
@@ -52,6 +46,8 @@ async def run_backtest(request: BacktestRequest):
         result["result_id"] = str(uuid.uuid4())
         return BacktestResult(**result)
         
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,6 +91,8 @@ async def compare_strategies(request: CompareRequest):
             min_drawdown_strategy=min_drawdown.strategy
         )
         
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -130,5 +128,7 @@ async def optimize_parameters(request: OptimizeRequest):
         
         return OptimizationResult(**result)
         
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

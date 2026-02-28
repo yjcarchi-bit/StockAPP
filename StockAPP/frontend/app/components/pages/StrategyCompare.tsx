@@ -4,9 +4,10 @@ import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { strategies, strategiesByCategory, etfPool, type StrategyType, type Strategy } from '../../utils/strategyConfig';
+import { strategies, strategiesByCategory, etfPool, type StrategyType } from '../../utils/strategyConfig';
 import ETFSelector from '../backtest/ETFSelector';
-import { runBacktest } from '../../utils/backtestRunner';
+import { apiClient } from '../../utils/apiClient';
+import { adaptBacktestResult } from '../../utils/backtestApiAdapter';
 import type { BacktestResult } from '../../utils/backtestEngine';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { usePersistentState } from '../../hooks';
@@ -18,6 +19,23 @@ const DEFAULT_COMPARE_PARAMS = {
 };
 
 const DEFAULT_SELECTED_ETFS = etfPool.filter(etf => etf.selected).map(etf => etf.code);
+
+function normalizeStrategyParams(params: Record<string, any>): Record<string, any> {
+  const mapped = { ...params };
+  if (Object.prototype.hasOwnProperty.call(mapped, 'stop_loss')) {
+    mapped.stop_loss_ratio = mapped.stop_loss;
+    delete mapped.stop_loss;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_short_momentum')) {
+    mapped.use_short_momentum_filter = mapped.use_short_momentum;
+    delete mapped.use_short_momentum;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_atr_stop')) {
+    mapped.use_atr_stop_loss = mapped.use_atr_stop;
+    delete mapped.use_atr_stop;
+  }
+  return mapped;
+}
 
 export default function StrategyCompare() {
   const [selectedStrategies, setSelectedStrategies] = usePersistentState<StrategyType[]>('compare_strategies', ['etf_rotation']);
@@ -38,34 +56,46 @@ export default function StrategyCompare() {
 
   const handleRunCompare = async () => {
     setIsRunning(true);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      if (selectedStrategies.length < 2) {
+        throw new Error('策略对比至少需要选择 2 个策略');
+      }
 
-    const newResults = new Map<StrategyType, BacktestResult>();
-    
-    selectedStrategies.forEach(strategyId => {
-      const strategy = strategies.find(s => s.id === strategyId)!;
-      const defaultParams: Record<string, any> = {};
-      strategy.parameters.forEach(param => {
-        defaultParams[param.key] = param.default;
+      const strategyParamsList = selectedStrategies.map(strategyId => {
+        const strategy = strategies.find(s => s.id === strategyId)!;
+        const defaultParams: Record<string, any> = {};
+        strategy.parameters.forEach(param => {
+          defaultParams[param.key] = param.default;
+        });
+        return normalizeStrategyParams(defaultParams);
       });
 
-      const config = {
-        strategy: strategyId,
-        ...params,
-        benchmark: '510300',
-        commission: 0.0003,
-        stampDuty: 0.001,
-        slippage: 0.001,
-        parameters: defaultParams,
-        etfCodes: selectedETFs,
-      };
+      const compareResult = await apiClient.compareBacktest({
+        strategies: selectedStrategies,
+        strategy_params_list: strategyParamsList,
+        backtest_params: {
+          start_date: params.startDate,
+          end_date: params.endDate,
+          initial_capital: params.initialCapital,
+          commission_rate: 0.0003,
+          stamp_duty: 0.001,
+          slippage: 0.001,
+        },
+        etf_codes: selectedETFs,
+      });
 
-      const result = runBacktest(config);
-      newResults.set(strategyId, result);
-    });
+      const newResults = new Map<StrategyType, BacktestResult>();
+      compareResult.results.forEach(result => {
+        newResults.set(result.strategy as StrategyType, adaptBacktestResult(result));
+      });
 
-    setResults(newResults);
-    setIsRunning(false);
+      setResults(newResults);
+    } catch (error) {
+      console.error('策略对比失败:', error);
+      setResults(new Map());
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   const handleClear = () => {
@@ -104,6 +134,14 @@ export default function StrategyCompare() {
         <h1 className="text-3xl mb-2 text-foreground">📊 策略对比</h1>
         <p className="text-muted-foreground">对比多个策略的回测结果，帮助您选择最优策略</p>
       </div>
+
+      {strategies.length < 2 && (
+        <Card className="border-yellow-300 bg-yellow-50 dark:bg-yellow-900/20">
+          <CardContent className="pt-6 text-sm text-yellow-800 dark:text-yellow-200">
+            当前仅配置了 1 个策略，无法进行对比。请先新增至少 2 个可用策略。
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -253,7 +291,7 @@ export default function StrategyCompare() {
         <Button
           size="lg"
           onClick={handleRunCompare}
-          disabled={isRunning || selectedStrategies.length === 0 || selectedETFs.length === 0}
+          disabled={isRunning || selectedStrategies.length < 2 || selectedETFs.length === 0}
           className="bg-primary hover:bg-primary/90"
         >
           <Play className="mr-2 h-5 w-5" />

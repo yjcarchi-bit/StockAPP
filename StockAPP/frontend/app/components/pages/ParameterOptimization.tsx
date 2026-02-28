@@ -6,9 +6,9 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { strategies, etfPool, type StrategyType } from '../../utils/strategyConfig';
-import { runBacktest } from '../../utils/backtestRunner';
 import { Progress } from '../ui/progress';
 import { usePersistentState } from '../../hooks';
+import { apiClient } from '../../utils/apiClient';
 
 interface OptimizationResult {
   params: Record<string, any>;
@@ -21,6 +21,23 @@ const DEFAULT_OPTIMIZATION_PARAMS = {
   startDate: '2021-01-01',
   endDate: '2024-01-01',
 };
+
+function normalizeParams(params: Record<string, any>): Record<string, any> {
+  const mapped = { ...params };
+  if (Object.prototype.hasOwnProperty.call(mapped, 'stop_loss')) {
+    mapped.stop_loss_ratio = mapped.stop_loss;
+    delete mapped.stop_loss;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_short_momentum')) {
+    mapped.use_short_momentum_filter = mapped.use_short_momentum;
+    delete mapped.use_short_momentum;
+  }
+  if (Object.prototype.hasOwnProperty.call(mapped, 'use_atr_stop')) {
+    mapped.use_atr_stop_loss = mapped.use_atr_stop;
+    delete mapped.use_atr_stop;
+  }
+  return mapped;
+}
 
 export default function ParameterOptimization() {
   const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('optimization_strategy', 'etf_rotation');
@@ -39,6 +56,7 @@ export default function ParameterOptimization() {
   const generateParamGrid = () => {
     const strategy = strategies.find(s => s.id === selectedStrategy)!;
     const grids: Record<string, any[]> = {};
+    const fixedParams: Record<string, any> = {};
     let totalCombinations = 1;
 
     strategy.parameters.forEach(param => {
@@ -52,75 +70,92 @@ export default function ParameterOptimization() {
       } else if (param.type === 'select' && param.options) {
         grids[param.key] = param.options.map(o => o.value);
         totalCombinations *= param.options.length;
+      } else {
+        fixedParams[param.key] = param.default;
       }
     });
 
-    return { grids, totalCombinations };
+    return { grids, fixedParams, totalCombinations };
   };
 
   const handleOptimize = async () => {
     setIsOptimizing(true);
     setProgress(0);
     
-    const { grids, totalCombinations } = generateParamGrid();
-    const allResults: OptimizationResult[] = [];
-    
-    const paramKeys = Object.keys(grids);
-    const combinations: Record<string, any>[] = [];
-    
-    const generateCombinations = (index: number, current: Record<string, any>) => {
-      if (index === paramKeys.length) {
-        combinations.push({ ...current });
-        return;
-      }
+    try {
+      const { grids, fixedParams } = generateParamGrid();
+      setProgress(30);
       
-      const key = paramKeys[index];
-      grids[key].forEach((value: any) => {
-        current[key] = value;
-        generateCombinations(index + 1, current);
-      });
-    };
-    
-    generateCombinations(0, {});
-    
-    for (let i = 0; i < Math.min(combinations.length, 20); i++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const params = combinations[i];
-      const config = {
+      const optimizeResult = await apiClient.optimizeBacktest({
         strategy: selectedStrategy,
-        ...dateRange,
-        initialCapital,
-        benchmark: '510300',
-        commission: 0.0003,
-        stampDuty: 0.001,
-        slippage: 0.001,
-        parameters: params,
-        etfCodes: [selectedETF],
-      };
-      
-      const result = runBacktest(config);
-      allResults.push({
-        params,
-        totalReturn: result.totalReturn,
-        sharpeRatio: result.sharpeRatio,
-        maxDrawdown: result.maxDrawdown,
+        param_grid: normalizeParams(grids),
+        fixed_params: normalizeParams(fixedParams),
+        backtest_params: {
+          start_date: dateRange.startDate,
+          end_date: dateRange.endDate,
+          initial_capital: initialCapital,
+          commission_rate: 0.0003,
+          stamp_duty: 0.001,
+          slippage: 0.001,
+        },
+        etf_codes: [selectedETF],
+        optimization_metric: optimizationTarget === 'sharpe' ? 'sharpe_ratio' : 'total_return',
+        method: optimizationMethod,
+        n_iter: 20,
       });
       
-      setProgress(((i + 1) / Math.min(combinations.length, 20)) * 100);
-    }
-    
-    const sortedResults = allResults.sort((a, b) => {
-      if (optimizationTarget === 'sharpe') {
-        return b.sharpeRatio - a.sharpeRatio;
-      } else {
+      setProgress(80);
+      
+      const allResults: OptimizationResult[] = optimizeResult.all_results.map((row: Record<string, any>) => {
+        const metricKeys = new Set([
+          'total_return',
+          'annual_return',
+          'max_drawdown',
+          'sharpe_ratio',
+          'sortino_ratio',
+          'calmar_ratio',
+          'win_rate',
+          'profit_factor',
+          'total_trades',
+          'final_value',
+          'benchmark_return',
+        ]);
+        const params: Record<string, any> = {};
+        Object.entries(row).forEach(([key, value]) => {
+          if (!metricKeys.has(key)) {
+            params[key] = value;
+          }
+        });
+        return {
+          params,
+          totalReturn: Number(row.total_return ?? 0),
+          sharpeRatio: Number(row.sharpe_ratio ?? 0),
+          maxDrawdown: Math.abs(Number(row.max_drawdown ?? 0)),
+        };
+      });
+      
+      const sortedResults = allResults.sort((a, b) => {
+        if (optimizationTarget === 'sharpe') {
+          return b.sharpeRatio - a.sharpeRatio;
+        }
         return b.totalReturn - a.totalReturn;
-      }
-    });
-    
-    setResults(sortedResults);
-    setBestResult(sortedResults[0]);
-    setIsOptimizing(false);
+      });
+      
+      setResults(sortedResults);
+      setBestResult({
+        params: optimizeResult.best_params,
+        totalReturn: optimizeResult.best_metrics.total_return,
+        sharpeRatio: optimizeResult.best_metrics.sharpe_ratio,
+        maxDrawdown: Math.abs(optimizeResult.best_metrics.max_drawdown),
+      });
+      setProgress(100);
+    } catch (error) {
+      console.error('参数优化失败:', error);
+      setResults([]);
+      setBestResult(null);
+    } finally {
+      setIsOptimizing(false);
+    }
   };
 
   const { totalCombinations } = generateParamGrid();

@@ -211,7 +211,8 @@ class ParameterOptimizer:
         if self._strategy_class is None:
             raise ValueError("请先设置策略类")
         
-        strategy = self._strategy_class(**params)
+        strategy = self._strategy_class()
+        strategy.set_params(params)
         return strategy
     
     def _run_single_backtest(

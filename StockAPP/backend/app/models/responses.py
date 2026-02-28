@@ -130,7 +130,7 @@ class StrategyInfo(BaseModel):
     logic: List[str]
     suitable: str
     risk: str
-    params: Dict[str, Any]
+    params: List[Dict[str, Any]]
 
 
 class StrategyListItem(BaseModel):
