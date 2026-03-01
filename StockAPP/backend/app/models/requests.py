@@ -16,7 +16,16 @@ class BacktestParams(BaseModel):
     initial_capital: float = Field(100000, description="初始资金")
     commission_rate: float = Field(0.0003, description="佣金费率")
     stamp_duty: float = Field(0.001, description="印花税率")
+    min_commission: float = Field(5.0, description="最低佣金")
     slippage: float = Field(0.0, description="滑点")
+    stock_commission_rate: Optional[float] = Field(None, description="股票佣金费率（可选）")
+    stock_stamp_duty: Optional[float] = Field(None, description="股票印花税率（可选）")
+    stock_min_commission: Optional[float] = Field(None, description="股票最低佣金（可选）")
+    fund_commission_rate: Optional[float] = Field(None, description="基金佣金费率（可选）")
+    fund_stamp_duty: Optional[float] = Field(None, description="基金印花税率（可选）")
+    fund_min_commission: Optional[float] = Field(None, description="基金最低佣金（可选）")
+    stock_slippage: Optional[float] = Field(None, description="股票滑点（可选）")
+    fund_slippage: Optional[float] = Field(None, description="基金滑点（可选）")
 
 
 class BacktestRequest(BaseModel):

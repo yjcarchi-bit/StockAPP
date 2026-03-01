@@ -36,7 +36,15 @@ class BacktestConfig:
         min_commission: 最低佣金
         lot_size: 每手股数
         benchmark: 基准指数代码
-        slippage: 滑点
+        slippage: 全局滑点（向后兼容）
+        stock_commission_rate: 股票佣金率（可选）
+        stock_stamp_duty: 股票印花税率（可选）
+        stock_min_commission: 股票最低佣金（可选）
+        fund_commission_rate: 基金佣金率（可选）
+        fund_stamp_duty: 基金印花税率（可选）
+        fund_min_commission: 基金最低佣金（可选）
+        stock_slippage: 股票滑点（可选）
+        fund_slippage: 基金滑点（可选）
     """
     
     start_date: Union[str, datetime]
@@ -48,6 +56,14 @@ class BacktestConfig:
     lot_size: int = 100
     benchmark: str = "000300"
     slippage: float = 0.0
+    stock_commission_rate: Optional[float] = None
+    stock_stamp_duty: Optional[float] = None
+    stock_min_commission: Optional[float] = None
+    fund_commission_rate: Optional[float] = None
+    fund_stamp_duty: Optional[float] = None
+    fund_min_commission: Optional[float] = None
+    stock_slippage: Optional[float] = None
+    fund_slippage: Optional[float] = None
     
     def __post_init__(self):
         if isinstance(self.start_date, str):
@@ -436,6 +452,15 @@ class BacktestEngine:
             stamp_duty=self.config.stamp_duty,
             min_commission=self.config.min_commission,
             lot_size=self.config.lot_size,
+            slippage=self.config.slippage,
+            stock_commission_rate=self.config.stock_commission_rate,
+            stock_stamp_duty=self.config.stock_stamp_duty,
+            stock_min_commission=self.config.stock_min_commission,
+            fund_commission_rate=self.config.fund_commission_rate,
+            fund_stamp_duty=self.config.fund_stamp_duty,
+            fund_min_commission=self.config.fund_min_commission,
+            stock_slippage=self.config.stock_slippage,
+            fund_slippage=self.config.fund_slippage,
         )
         
         strategy = self._strategies[0]

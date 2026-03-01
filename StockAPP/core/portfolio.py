@@ -146,6 +146,15 @@ class Portfolio:
         stamp_duty: float = 0.001,
         min_commission: float = 5.0,
         lot_size: int = 100,
+        slippage: float = 0.0,
+        stock_commission_rate: Optional[float] = None,
+        stock_stamp_duty: Optional[float] = None,
+        stock_min_commission: Optional[float] = None,
+        fund_commission_rate: Optional[float] = None,
+        fund_stamp_duty: Optional[float] = None,
+        fund_min_commission: Optional[float] = None,
+        stock_slippage: Optional[float] = None,
+        fund_slippage: Optional[float] = None,
     ):
         """
         初始化组合
@@ -156,12 +165,35 @@ class Portfolio:
             stamp_duty: 印花税率（仅卖出）
             min_commission: 最低佣金
             lot_size: 每手股数
+            slippage: 全局滑点（向后兼容）
+            stock_commission_rate: 股票佣金率（可选）
+            stock_stamp_duty: 股票印花税率（可选）
+            stock_min_commission: 股票最低佣金（可选）
+            fund_commission_rate: 基金佣金率（可选）
+            fund_stamp_duty: 基金印花税率（可选）
+            fund_min_commission: 基金最低佣金（可选）
+            stock_slippage: 股票滑点（可选）
+            fund_slippage: 基金滑点（可选）
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
+
+        # 兼容旧字段：若未提供分资产参数，则沿用统一费率/滑点
         self.commission_rate = commission_rate
         self.stamp_duty = stamp_duty
         self.min_commission = min_commission
+        self.slippage = slippage
+
+        self.stock_commission_rate = commission_rate if stock_commission_rate is None else float(stock_commission_rate)
+        self.stock_stamp_duty = stamp_duty if stock_stamp_duty is None else float(stock_stamp_duty)
+        self.stock_min_commission = min_commission if stock_min_commission is None else float(stock_min_commission)
+
+        self.fund_commission_rate = commission_rate if fund_commission_rate is None else float(fund_commission_rate)
+        self.fund_stamp_duty = stamp_duty if fund_stamp_duty is None else float(fund_stamp_duty)
+        self.fund_min_commission = min_commission if fund_min_commission is None else float(fund_min_commission)
+
+        self.stock_slippage = slippage if stock_slippage is None else float(stock_slippage)
+        self.fund_slippage = slippage if fund_slippage is None else float(fund_slippage)
         self.lot_size = lot_size
         
         self.positions: Dict[str, Position] = {}
@@ -170,6 +202,33 @@ class Portfolio:
         
         self._total_commission = 0.0
         self._total_stamp_duty = 0.0
+
+    @staticmethod
+    def _is_stock_code(code: str) -> bool:
+        c = str(code).strip()
+        return len(c) == 6 and c[0] in {"0", "3", "6"}
+
+    def _asset_type(self, code: str) -> str:
+        return "stock" if self._is_stock_code(code) else "fund"
+
+    def _get_cost_params(self, code: str) -> tuple[float, float, float]:
+        if self._asset_type(code) == "stock":
+            return self.stock_commission_rate, self.stock_stamp_duty, self.stock_min_commission
+        return self.fund_commission_rate, self.fund_stamp_duty, self.fund_min_commission
+
+    def _get_slippage_rate(self, code: str) -> float:
+        if self._asset_type(code) == "stock":
+            return self.stock_slippage
+        return self.fund_slippage
+
+    def _apply_slippage(self, code: str, price: float, is_buy: bool) -> float:
+        if price <= 0:
+            return price
+        rate = float(self._get_slippage_rate(code) or 0.0)
+        rate = min(max(rate, 0.0), 0.5)
+        if rate <= 0:
+            return price
+        return price * (1.0 + rate) if is_buy else price * (1.0 - rate)
     
     @property
     def position_value(self) -> float:
@@ -228,7 +287,8 @@ class Portfolio:
             可买入数量（整手）
         """
         available_cash = self.cash * ratio
-        estimated_commission = max(available_cash * self.commission_rate, self.min_commission)
+        commission_rate, _, min_commission = self._get_cost_params(code)
+        estimated_commission = max(available_cash * commission_rate, min_commission)
         available_cash -= estimated_commission
         
         max_shares = int(available_cash / price)
@@ -236,7 +296,7 @@ class Portfolio:
         
         return lot_shares
     
-    def calculate_commission(self, value: float, is_sell: bool = False) -> float:
+    def calculate_commission(self, code: str, value: float, is_sell: bool = False) -> float:
         """
         计算交易费用
         
@@ -247,8 +307,9 @@ class Portfolio:
         Returns:
             总费用（佣金 + 印花税）
         """
-        commission = max(value * self.commission_rate, self.min_commission)
-        stamp = value * self.stamp_duty if is_sell else 0
+        commission_rate, stamp_duty, min_commission = self._get_cost_params(code)
+        commission = max(value * commission_rate, min_commission)
+        stamp = value * stamp_duty if is_sell else 0
         
         return commission + stamp
     
@@ -276,8 +337,9 @@ class Portfolio:
         if amount <= 0:
             return None
         
-        value = price * amount
-        commission = self.calculate_commission(value, is_sell=False)
+        exec_price = self._apply_slippage(code, price, is_buy=True)
+        value = exec_price * amount
+        commission = self.calculate_commission(code, value, is_sell=False)
         total_cost = value + commission
         
         if total_cost > self.cash:
@@ -288,13 +350,13 @@ class Portfolio:
         
         pos = self.get_position(code)
         pos.name = name
-        pos.buy(price, amount)
+        pos.buy(exec_price, amount)
         
         trade = Trade(
             order_id="",
             code=code,
             side=OrderSide.BUY,
-            price=price,
+            price=exec_price,
             amount=amount,
             commission=commission,
             timestamp=timestamp or datetime.now()
@@ -335,23 +397,25 @@ class Portfolio:
         if amount <= 0:
             return None
         
-        value = price * amount
-        commission = self.calculate_commission(value, is_sell=True)
-        
-        self._total_commission += commission - value * self.stamp_duty
-        self._total_stamp_duty += value * self.stamp_duty
+        exec_price = self._apply_slippage(code, price, is_buy=False)
+        value = exec_price * amount
+        commission = self.calculate_commission(code, value, is_sell=True)
+        _, stamp_duty, _ = self._get_cost_params(code)
+
+        self._total_commission += commission - value * stamp_duty
+        self._total_stamp_duty += value * stamp_duty
         
         revenue = value - commission
         self.cash += revenue
         
         pos.sell(amount)
-        pos.update_price(price)
+        pos.update_price(exec_price)
         
         trade = Trade(
             order_id="",
             code=code,
             side=OrderSide.SELL,
-            price=price,
+            price=exec_price,
             amount=amount,
             commission=commission,
             timestamp=timestamp or datetime.now()
