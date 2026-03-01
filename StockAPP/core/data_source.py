@@ -1,7 +1,7 @@
 """
 数据源模块
 ==========
-统一的数据获取接口，封装efinance API，支持本地缓存
+统一的数据获取接口，封装多数据源 API，支持本地缓存
 
 特性:
 - 统一的股票/ETF/基金数据接口
@@ -9,7 +9,7 @@
 - 批量数据获取
 - 异常重试机制
 - 支持akshare_proxy_patch代理补丁（可选）
-- 支持故障转移机制（efinance失败时自动切换akshare）
+- 支持故障转移机制（tushare -> efinance -> akshare）
 """
 
 import os
@@ -121,10 +121,10 @@ class DataSource:
     """
     统一数据源
     
-    封装efinance API，提供统一的股票/ETF/基金数据获取接口
+    封装多数据源接口，提供统一的股票/ETF/基金数据获取能力
     
     支持故障转移机制：
-        当efinance获取数据失败时，自动切换到akshare备用数据源。
+        优先使用 tushare，失败后回退到 efinance，最后回退到 akshare。
         可通过配置 enable_fallback=False 禁用此功能。
     
     支持akshare_proxy_patch代理补丁，用于解决东方财富API连接问题。
@@ -370,6 +370,7 @@ class DataSource:
         code: str,
         start_str: str,
         end_str: str,
+        data_type: str,
         klt: int,
         fqt: int
     ) -> Optional[pd.DataFrame]:
@@ -394,6 +395,32 @@ class DataSource:
             self._rate_limit()
             
             market_code = self._get_market_code(code)
+            adjust = "qfq" if fqt == 1 else ("hfq" if fqt == 2 else "")
+
+            # ETF/基金优先走新浪源，规避东财链路在部分网络环境下的连接中断
+            if data_type in {self.ETF_TYPE, self.FUND_TYPE} and klt == 101:
+                df = ak.fund_etf_hist_sina(symbol=market_code)
+                return self._finalize_fallback_frame(df, start_str, end_str)
+
+            # 股票优先走非东财备用接口
+            if data_type == self.STOCK_TYPE and klt == 101:
+                for fetcher in (ak.stock_zh_a_daily, ak.stock_zh_a_hist_tx):
+                    try:
+                        df = fetcher(
+                            symbol=market_code,
+                            start_date=start_str,
+                            end_date=end_str,
+                            adjust=adjust,
+                        )
+                    except TypeError:
+                        # 个别接口可能不支持adjust参数
+                        df = fetcher(
+                            symbol=market_code,
+                            start_date=start_str,
+                            end_date=end_str,
+                        )
+                    if df is not None and len(df) > 0:
+                        return self._finalize_fallback_frame(df, start_str, end_str)
             
             if klt == 101:
                 period = "daily"
@@ -404,8 +431,6 @@ class DataSource:
             else:
                 period = "daily"
             
-            adjust = "qfq" if fqt == 1 else ("hfq" if fqt == 2 else "")
-            
             df = ak.stock_zh_a_hist(
                 symbol=code,
                 period=period,
@@ -414,29 +439,47 @@ class DataSource:
                 adjust=adjust
             )
             
-            if df is not None and len(df) > 0:
-                column_mapping = {
-                    "日期": "date",
-                    "开盘": "open",
-                    "收盘": "close",
-                    "最高": "high",
-                    "最低": "low",
-                    "成交量": "volume",
-                    "成交额": "amount",
-                    "换手率": "turnover",
-                }
-                df = df.rename(columns=column_mapping)
-                
-                if "date" in df.columns:
-                    df["date"] = pd.to_datetime(df["date"])
-                    df = df.sort_values("date").reset_index(drop=True)
-                
-                return df
-            return None
+            return self._finalize_fallback_frame(df, start_str, end_str)
             
         except Exception as e:
             print(f"akshare备用数据源获取{code}数据失败: {e}")
             return None
+
+    @staticmethod
+    def _finalize_fallback_frame(df: Optional[pd.DataFrame], start_str: str, end_str: str) -> Optional[pd.DataFrame]:
+        if df is None or len(df) == 0:
+            return None
+
+        column_mapping = {
+            "日期": "date",
+            "开盘": "open",
+            "收盘": "close",
+            "最高": "high",
+            "最低": "low",
+            "成交量": "volume",
+            "成交额": "amount",
+            "换手率": "turnover",
+        }
+        frame = df.rename(columns=column_mapping).copy()
+        if "date" not in frame.columns:
+            return None
+
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame = frame.dropna(subset=["date"])
+        if frame.empty:
+            return None
+
+        start_dt = pd.to_datetime(start_str, format="%Y%m%d", errors="coerce")
+        end_dt = pd.to_datetime(end_str, format="%Y%m%d", errors="coerce")
+        if pd.notna(start_dt):
+            frame = frame[frame["date"] >= start_dt]
+        if pd.notna(end_dt):
+            frame = frame[frame["date"] <= end_dt]
+        if frame.empty:
+            return None
+
+        frame = frame.sort_values("date").reset_index(drop=True)
+        return frame
     
     def _to_tushare_code(self, code: str, data_type: str) -> str:
         """将本地代码格式转换为 tushare ts_code"""
@@ -468,9 +511,7 @@ class DataSource:
         fqt: int
     ) -> Optional[pd.DataFrame]:
         """
-        尝试使用 tushare 作为第二备用数据源
-        
-        顺序中位于 efinance 之后、akshare 之前。
+        尝试使用 tushare 数据源
         """
         if not HAS_TUSHARE:
             print("⚠️ tushare未安装，跳过tushare备用数据源")
@@ -575,8 +616,8 @@ class DataSource:
         获取历史数据（通用接口）
         
         支持故障转移机制，数据源顺序：
-        1) efinance
-        2) tushare
+        1) tushare
+        2) efinance
         3) akshare（若启用了代理补丁则通过代理）
         
         Args:
@@ -601,7 +642,7 @@ class DataSource:
             if cached is not None:
                 return cached
         
-        df = self._try_efinance(code, start_str, end_str, klt, fqt)
+        df = self._try_tushare_fallback(code, start_str, end_str, data_type, klt, fqt)
         
         if df is not None:
             if use_cache:
@@ -609,23 +650,25 @@ class DataSource:
             return df
         
         if self.config.enable_fallback:
-            print(f"🔄 efinance获取失败，尝试tushare备用数据源: {code}")
-            df = self._try_tushare_fallback(code, start_str, end_str, data_type, klt, fqt)
+            print(f"🔄 tushare获取失败，尝试efinance数据源: {code}")
+            df = self._try_efinance(code, start_str, end_str, klt, fqt)
             
             if df is not None:
-                print(f"✅ 故障转移成功，使用tushare获取数据: {code}")
+                print(f"✅ 故障转移成功，使用efinance获取数据: {code}")
                 if use_cache:
                     self._save_cache(cache_key, df)
                 return df
             
-            print(f"🔄 tushare获取失败，尝试akshare备用数据源: {code}")
-            df = self._try_akshare_fallback(code, start_str, end_str, klt, fqt)
+            print(f"🔄 efinance获取失败，尝试akshare备用数据源: {code}")
+            df = self._try_akshare_fallback(code, start_str, end_str, data_type, klt, fqt)
             
             if df is not None:
                 print(f"✅ 故障转移成功，使用akshare获取数据: {code}")
                 if use_cache:
                     self._save_cache(cache_key, df)
                 return df
+        else:
+            print(f"⚠️ tushare获取失败，且已禁用故障转移: {code}")
         
         print(f"❌ 获取{code}历史数据失败，所有数据源均不可用")
         return None

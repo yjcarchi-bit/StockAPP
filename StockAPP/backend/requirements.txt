@@ -7,6 +7,8 @@ alembic>=1.13.0
 PyMySQL>=1.1.0
 
 efinance>=0.5.5
+akshare>=1.18.0
+tushare>=1.4.24
 pandas>=2.0.0
 numpy>=1.24.0
 
