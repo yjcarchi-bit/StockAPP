@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import sys
 import os
@@ -114,6 +114,16 @@ class ThreeHorseCarriageStrategy(StrategyBase):
             "description": "启用贴近原版调度节奏（小市值周频、白马月频）",
             "type": "switch",
         },
+        "scheduler_mode": {
+            "default": "phase_aligned",
+            "description": "调度模式：phase_aligned(原版时序仿真) / legacy_daily(历史聚合)",
+            "type": "text",
+        },
+        "small_xsz_version": {
+            "default": "v3",
+            "description": "小市值选股版本：v1/v2/v3",
+            "type": "text",
+        },
         "small_rebalance_weekday": {
             "default": 2,
             "min": 1,
@@ -170,6 +180,21 @@ class ThreeHorseCarriageStrategy(StrategyBase):
         },
     }
 
+    PHASE_ORDER: List[str] = [
+        "prepare",
+        "dbl_check",
+        "smallcap_weekly_rebalance",
+        "smallcap_stoploss",
+        "rotation_rebalance",
+        "rotation_intraday_stoploss_check",
+        "limit_up_check",
+        "capital_balance",
+        "rebound_rebalance",
+        "close_account",
+        "whitehorse_monthly_rebalance",
+        "finalize_snapshot",
+    ]
+
     def __init__(self):
         super().__init__()
         self._small_ratio = 0.35
@@ -180,6 +205,7 @@ class ThreeHorseCarriageStrategy(StrategyBase):
         self._capital_balance_date = date(2023, 9, 28)
         self._min_trade_value = 1000.0
         self._emulate_original_timing = True
+        self._scheduler_mode = "phase_aligned"
 
         self._small = ThreeHorseSmallCapStrategy()
         self._white = ThreeHorseWhiteHorseStrategy()
@@ -188,6 +214,17 @@ class ThreeHorseCarriageStrategy(StrategyBase):
         self._last_snapshot: Dict[str, Any] = {}
         self._small_cached_targets: List[str] = []
         self._white_cached_targets: List[str] = []
+        self._small_day_start_targets: List[str] = []
+        self._active_rotation_code: Optional[str] = None
+        self._active_rebound_code: Optional[str] = None
+        self._phase_weights: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        self._small_freeze_positions = True
+        self._white_freeze_positions = True
+        self._phase_trace: List[str] = []
+
+    def _normalize_scheduler_mode(self, mode: str) -> str:
+        m = str(mode).strip().lower()
+        return m if m in {"phase_aligned", "legacy_daily"} else "phase_aligned"
 
     def initialize(self) -> None:
         self._small_ratio = float(self.get_param("small_ratio", 0.35))
@@ -197,8 +234,10 @@ class ThreeHorseCarriageStrategy(StrategyBase):
         self._enable_capital_balance_rule = bool(self.get_param("enable_capital_balance_rule", True))
         self._min_trade_value = float(self.get_param("min_trade_value", 1000))
         self._emulate_original_timing = bool(self.get_param("emulate_original_timing", True))
+        self._scheduler_mode = self._normalize_scheduler_mode(self.get_param("scheduler_mode", "phase_aligned"))
 
         small_params = {
+            "xsz_version": str(self.get_param("small_xsz_version", "v3")),
             "stock_num": int(self.get_param("small_stock_num", 5)),
             "use_defense_etf": True,
             "rebalance_weekly": bool(self._emulate_original_timing),
@@ -236,7 +275,14 @@ class ThreeHorseCarriageStrategy(StrategyBase):
         self._last_snapshot = {}
         self._small_cached_targets = []
         self._white_cached_targets = []
-        self.log("初始化完成（三驾马车总策略本地版）")
+        self._small_day_start_targets = []
+        self._active_rotation_code = None
+        self._active_rebound_code = None
+        self._phase_weights = self._effective_weights()
+        self._small_freeze_positions = True
+        self._white_freeze_positions = True
+        self._phase_trace = []
+        self.log(f"初始化完成（三驾马车总策略本地版，scheduler_mode={self._scheduler_mode}）")
 
     def _sync_helpers(self) -> None:
         for helper in (self._small, self._white, self._dual):
@@ -311,125 +357,215 @@ class ThreeHorseCarriageStrategy(StrategyBase):
             if tar_val > cur_val + self._min_trade_value:
                 self._order_target_value(code, tar_val)
 
-    def _apply_small_stoploss_on_cached_positions(self) -> None:
-        if not self._small_cached_targets:
-            return
+    def _build_combined_targets(self, freeze_small: bool, freeze_white: bool) -> Dict[str, float]:
+        s_w, r_w, t_w, w_w = self._phase_weights
+        tv = float(self.total_value)
+        targets: Dict[str, float] = {}
 
-        # 市场级止损（贴近原版 strategy_1 的 stoploss_strategy=3）
-        if int(getattr(self._small, "_stoploss_strategy", 3)) in {2, 3}:
-            if self._small._market_stoploss_triggered():
-                for code in list(self._small_cached_targets):
+        small_targets = self._small_cached_targets[:]
+        if small_targets and s_w > 0:
+            if freeze_small:
+                for code in small_targets:
                     if not self.has_position(code):
                         continue
-                    cp = self.get_price(code)
-                    if cp <= 0:
-                        continue
-                    self.sell_all(code, price=cp)
-                    self._small._cooldown_days[code] = int(getattr(self._small, "_no_buy_after_days", 3))
-                self._small_cached_targets = []
-                return
-
-        if int(getattr(self._small, "_stoploss_strategy", 3)) not in {1, 3}:
-            return
-
-        next_targets: List[str] = []
-        for code in list(self._small_cached_targets):
-            if not self.has_position(code):
-                continue
-            pos = self.get_position(code)
-            if pos.is_empty or pos.cost_price <= 0:
-                continue
-            cp = self.get_price(code)
-            if cp <= 0:
-                continue
-
-            # 贴近原版：翻倍止盈 + 固定止损
-            if cp >= pos.cost_price * 2:
-                self.sell_all(code, price=cp)
-                continue
-            if cp < pos.cost_price * (1 - float(getattr(self._small, "_stoploss_limit", 0.09))):
-                self.sell_all(code, price=cp)
-                self._small._cooldown_days[code] = int(getattr(self._small, "_no_buy_after_days", 3))
-                continue
-            next_targets.append(code)
-
-        self._small_cached_targets = next_targets
-
-    def on_trading_day(self, date: datetime, bars: Dict[str, Any]) -> None:
-        self._sync_helpers()
-
-        # 子策略信号
-        self._small._update_cooldown()
-        self._small._update_dbl_signal()
-        self._apply_small_stoploss_on_cached_positions()
-        small_selected = self._small._select_targets()
-        if self._small.did_rebalance_select():
-            self._small_cached_targets = small_selected[:]
-        small_targets = self._small_cached_targets[:]
-
-        white_selected = self._white._select_targets()
-        if self._white.did_rebalance_select():
-            self._white_cached_targets = white_selected[:]
-        white_targets = self._white_cached_targets[:]
-
-        rotation_code = self._dual._select_rotation()
-        rebound_code = self._dual._select_rebound()
-
-        s_w, r_w, t_w, w_w = self._effective_weights()
-        tv = float(self.total_value)
-
-        targets: Dict[str, float] = {}
-        if small_targets and s_w > 0:
-            if self._small.did_rebalance_select():
-                each = tv * s_w / len(small_targets)
-                for c in small_targets:
-                    targets[c] = targets.get(c, 0.0) + each
+                    value = self.get_position(code).amount * self.get_price(code)
+                    if value > 0:
+                        targets[code] = targets.get(code, 0.0) + value
             else:
-                # 非小市值调仓日，冻结已有仓位，避免日频回归造成额外换手
-                for c in small_targets:
-                    if not self.has_position(c):
-                        continue
-                    v = self.get_position(c).amount * self.get_price(c)
-                    if v > 0:
-                        targets[c] = targets.get(c, 0.0) + v
+                each = tv * s_w / len(small_targets)
+                for code in small_targets:
+                    targets[code] = targets.get(code, 0.0) + each
         elif s_w > 0 and getattr(self._small, "_use_defense_etf", True):
             defense_code = str(getattr(self._small, "_defense_etf", "512800"))
             if defense_code in self._data:
                 targets[defense_code] = targets.get(defense_code, 0.0) + tv * s_w
 
+        white_targets = self._white_cached_targets[:]
         if white_targets and w_w > 0:
-            if self._white.did_rebalance_select():
-                each = tv * w_w / len(white_targets)
-                for c in white_targets:
-                    targets[c] = targets.get(c, 0.0) + each
-            else:
-                # 非白马调仓日，冻结已有仓位，贴近月频调仓节奏
-                for c in white_targets:
-                    if not self.has_position(c):
+            if freeze_white:
+                for code in white_targets:
+                    if not self.has_position(code):
                         continue
-                    v = self.get_position(c).amount * self.get_price(c)
-                    if v > 0:
-                        targets[c] = targets.get(c, 0.0) + v
+                    value = self.get_position(code).amount * self.get_price(code)
+                    if value > 0:
+                        targets[code] = targets.get(code, 0.0) + value
+            else:
+                each = tv * w_w / len(white_targets)
+                for code in white_targets:
+                    targets[code] = targets.get(code, 0.0) + each
 
-        if rotation_code and t_w > 0:
-            targets[rotation_code] = targets.get(rotation_code, 0.0) + tv * t_w
+        if self._active_rotation_code and t_w > 0:
+            targets[self._active_rotation_code] = targets.get(self._active_rotation_code, 0.0) + tv * t_w
+        if self._active_rebound_code and r_w > 0:
+            targets[self._active_rebound_code] = targets.get(self._active_rebound_code, 0.0) + tv * r_w
+        return targets
 
-        if rebound_code and r_w > 0:
-            targets[rebound_code] = targets.get(rebound_code, 0.0) + tv * r_w
-
-        self._rebalance_targets(targets)
-
+    def _update_prices_from_bars(self, bars: Dict[str, Any]) -> None:
         for code in list(self._portfolio.positions.keys()):
             if code in bars:
                 self.update_position_price(code, float(bars[code].close))
 
+    def _run_legacy_daily_pipeline(self, bars: Dict[str, Any]) -> None:
+        self._sync_helpers()
+
+        self._small.prepare_daily_state(tracked_codes=self._small_cached_targets)
+        self._small.run_dbl_control_step(tracked_codes=self._small_cached_targets)
+        sold_small = self._small.run_stoploss_step(tracked_codes=self._small_cached_targets)
+        sold_limit = self._small.check_limit_up_break(tracked_codes=self._small_cached_targets)
+        sold_codes = set(sold_small) | set(sold_limit)
+        if sold_codes:
+            self._small_cached_targets = [c for c in self._small_cached_targets if c not in sold_codes]
+
+        small_selected = self._small._select_targets()
+        if self._small.did_rebalance_select():
+            self._small_cached_targets = small_selected[:]
+        self._small_freeze_positions = not self._small.did_rebalance_select()
+
+        self._white._check_stoploss()
+        white_selected = self._white._select_targets()
+        if self._white.did_rebalance_select():
+            self._white_cached_targets = white_selected[:]
+        self._white_freeze_positions = not self._white.did_rebalance_select()
+
+        self._active_rotation_code = self._dual._select_rotation()
+        self._active_rebound_code = self._dual._select_rebound()
+        self._phase_weights = self._effective_weights()
+
+        targets = self._build_combined_targets(
+            freeze_small=self._small_freeze_positions,
+            freeze_white=self._white_freeze_positions,
+        )
+        self._rebalance_targets(targets)
+        self._update_prices_from_bars(bars)
+
         self._last_snapshot = {
-            "small": small_targets[:5],
-            "white": white_targets[:5],
-            "rotation": rotation_code,
-            "rebound": rebound_code,
+            "mode": "legacy_daily",
+            "small": self._small_cached_targets[:5],
+            "white": self._white_cached_targets[:5],
+            "rotation": self._active_rotation_code,
+            "rebound": self._active_rebound_code,
             "targets": len(targets),
         }
+
+    def get_trading_phases(self, date: datetime, bars: Dict[str, Any]) -> List[str]:
+        if self._scheduler_mode == "legacy_daily":
+            return ["legacy_daily"]
+        return self.PHASE_ORDER[:]
+
+    def on_trading_phase(self, date: datetime, bars: Dict[str, Any], phase: str) -> None:
+        if self._scheduler_mode == "legacy_daily":
+            if phase == "legacy_daily":
+                self._run_legacy_daily_pipeline(bars)
+            return
+
+        self._phase_trace.append(phase)
+
+        if phase == "prepare":
+            self._sync_helpers()
+            self._phase_trace = [phase]
+            self._small_freeze_positions = True
+            self._white_freeze_positions = True
+            self._small_day_start_targets = self._small_cached_targets[:]
+            self._small.prepare_daily_state(tracked_codes=self._small_cached_targets)
+            return
+
+        if phase == "dbl_check":
+            self._small.run_dbl_control_step(tracked_codes=self._small_cached_targets)
+            self._small_cached_targets = [c for c in self._small_cached_targets if self.has_position(c)]
+            return
+
+        if phase == "smallcap_weekly_rebalance":
+            selected = self._small._select_targets()
+            if self._small.did_rebalance_select():
+                self._small_cached_targets = selected[:]
+                self._small_freeze_positions = False
+            else:
+                self._small_freeze_positions = True
+            return
+
+        if phase == "smallcap_stoploss":
+            sold_codes = self._small.run_stoploss_step(tracked_codes=self._small_cached_targets)
+            if sold_codes:
+                sold_set = set(sold_codes)
+                self._small_cached_targets = [c for c in self._small_cached_targets if c not in sold_set]
+            return
+
+        if phase == "rotation_rebalance":
+            self._active_rotation_code = self._dual._select_rotation()
+            return
+
+        if phase == "rotation_intraday_stoploss_check":
+            code = self._active_rotation_code
+            if not code or not self.has_position(code):
+                return
+            if not bool(getattr(self._dual, "_rotation_enable_day_stop_filter", True)):
+                return
+            ratio = self._dual._rotation_day_ratio(code)
+            limit = float(getattr(self._dual, "_rotation_day_stoploss_limit", -0.03))
+            if ratio is not None and ratio <= limit:
+                price = self.get_price(code)
+                if price > 0:
+                    self.sell_all(code, price=price)
+                    self._active_rotation_code = None
+                    self.log(f"ETF轮动日内止损触发: {code}")
+            return
+
+        if phase == "limit_up_check":
+            sold_codes = self._small.check_limit_up_break(tracked_codes=self._small_cached_targets)
+            if sold_codes:
+                sold_set = set(sold_codes)
+                self._small_cached_targets = [c for c in self._small_cached_targets if c not in sold_set]
+            return
+
+        if phase == "capital_balance":
+            self._phase_weights = self._effective_weights()
+            return
+
+        if phase == "rebound_rebalance":
+            self._active_rebound_code = self._dual._select_rebound()
+            return
+
+        if phase == "close_account":
+            close_scope = self._small_cached_targets[:]
+            if self.current_date is not None and self.current_date.month in {1, 4}:
+                close_scope = self._small_day_start_targets[:]
+            if self._small.close_account_if_pause_month(tracked_codes=close_scope):
+                self._small_cached_targets = [c for c in self._small_cached_targets if self.has_position(c)]
+                self._small_freeze_positions = True
+            return
+
+        if phase == "whitehorse_monthly_rebalance":
+            self._white._check_stoploss()
+            selected = self._white._select_targets()
+            if self._white.did_rebalance_select():
+                self._white_cached_targets = selected[:]
+                self._white_freeze_positions = False
+            else:
+                self._white_freeze_positions = True
+            return
+
+        if phase == "finalize_snapshot":
+            targets = self._build_combined_targets(
+                freeze_small=self._small_freeze_positions,
+                freeze_white=self._white_freeze_positions,
+            )
+            self._rebalance_targets(targets)
+            self._update_prices_from_bars(bars)
+            self._last_snapshot = {
+                "mode": "phase_aligned",
+                "phases": self._phase_trace[:],
+                "small": self._small_cached_targets[:5],
+                "white": self._white_cached_targets[:5],
+                "rotation": self._active_rotation_code,
+                "rebound": self._active_rebound_code,
+                "targets": len(targets),
+            }
+            self.log(f"phase_trace: {' -> '.join(self._phase_trace)}")
+            return
+
+    def on_trading_day(self, date: datetime, bars: Dict[str, Any]) -> None:
+        # 兼容旧引擎路径：当引擎未启用阶段调度时，走既有日频聚合逻辑。
+        self._run_legacy_daily_pipeline(bars)
 
     def on_end(self) -> None:
         self.log(f"回测结束：最后信号 {self._last_snapshot}")

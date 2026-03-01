@@ -490,7 +490,11 @@ class BacktestEngine:
                     bars[code] = bar
                     prices[code] = bar.close
             
-            strategy.on_trading_day(trade_date, bars)
+            phases = strategy.get_trading_phases(trade_date, bars)
+            if not phases:
+                phases = ["daily"]
+            for phase in phases:
+                strategy.on_trading_phase(trade_date, bars, phase)
             
             self._portfolio.record_daily_value(trade_date, prices)
         

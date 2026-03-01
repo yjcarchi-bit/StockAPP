@@ -202,6 +202,22 @@ class StrategyBase(ABC):
             bars: 所有证券当天的K线数据 {code: BarData}
         """
         pass
+
+    def get_trading_phases(self, date: datetime, bars: Dict[str, "BarData"]) -> List[str]:
+        """
+        获取当日交易阶段列表（可选扩展点，默认单阶段）。
+
+        默认行为保持与历史兼容：每天仅执行一次 on_trading_day。
+        """
+        return ["daily"]
+
+    def on_trading_phase(self, date: datetime, bars: Dict[str, "BarData"], phase: str) -> None:
+        """
+        交易阶段回调（可选扩展点，默认委托到 on_trading_day）。
+
+        子类可覆盖该方法实现“同日多阶段”调度；未覆盖时行为不变。
+        """
+        self.on_trading_day(date, bars)
     
     def on_start(self) -> None:
         """回测开始时调用"""
