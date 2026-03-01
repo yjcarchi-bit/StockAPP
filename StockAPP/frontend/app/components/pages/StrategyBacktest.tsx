@@ -1,88 +1,40 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Play, Loader2, Download } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
-import { strategies, etfPool, defaultBacktestConfig, type StrategyType, type Strategy } from '../../utils/strategyConfig';
+import { strategies, etfPool, type Strategy } from '../../utils/strategyConfig';
 import StrategyIntroPanel from '../backtest/StrategyIntroPanel';
 import BacktestParams from '../backtest/BacktestParams';
 import StrategyParams from '../backtest/StrategyParams';
 import ETFSelector from '../backtest/ETFSelector';
 import BacktestResults from '../backtest/BacktestResults';
-import { apiClient } from '../../utils/apiClient';
-import { adaptBacktestResult } from '../../utils/backtestApiAdapter';
-import type { BacktestResult } from '../../utils/backtestEngine';
-import { usePersistentState } from '../../hooks';
-
-interface LogEntry {
-  time: string;
-  level: 'info' | 'warning' | 'error' | 'success';
-  message: string;
-}
-
-function getTodayDate(): string {
-  const today = new Date();
-  return today.toISOString().split('T')[0];
-}
-
-function getDefaultStartDate(): string {
-  return '2015-01-01';
-}
-
-const DEFAULT_SELECTED_ETFS = etfPool.filter(etf => etf.selected).map(etf => etf.code);
-
-const DEFAULT_BACKTEST_PARAMS = {
-  startDate: getDefaultStartDate(),
-  endDate: getTodayDate(),
-  initialCapital: 100000,
-  benchmark: '510300',
-};
-
-function normalizeStrategyParams(params: Record<string, any>): Record<string, any> {
-  const mapped = { ...params };
-  if (Object.prototype.hasOwnProperty.call(mapped, 'stop_loss')) {
-    mapped.stop_loss_ratio = mapped.stop_loss;
-    delete mapped.stop_loss;
-  }
-  if (Object.prototype.hasOwnProperty.call(mapped, 'use_short_momentum')) {
-    mapped.use_short_momentum_filter = mapped.use_short_momentum;
-    delete mapped.use_short_momentum;
-  }
-  if (Object.prototype.hasOwnProperty.call(mapped, 'use_atr_stop')) {
-    mapped.use_atr_stop_loss = mapped.use_atr_stop;
-    delete mapped.use_atr_stop;
-  }
-  return mapped;
-}
+import { getLogColor, getLogPrefix, useBacktestPage } from '../../hooks';
 
 export default function StrategyBacktest() {
-  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('backtest_strategy', 'etf_rotation');
-  const [isIntroExpanded, setIsIntroExpanded] = useState(true);
-  const [selectedETFs, setSelectedETFs] = usePersistentState<string[]>('backtest_etfs', DEFAULT_SELECTED_ETFS);
-  const [backtestParams, setBacktestParams] = usePersistentState('backtest_params', DEFAULT_BACKTEST_PARAMS);
-  const [allStrategyParams, setAllStrategyParams] = usePersistentState<Record<StrategyType, Record<string, any>>>('backtest_all_strategy_params', {} as Record<StrategyType, Record<string, any>>);
-  const [isRunning, setIsRunning] = useState(false);
-  const [result, setResult] = usePersistentState<BacktestResult | null>('backtest_result', null);
-  const [progress, setProgress] = useState(0);
-  const [progressText, setProgressText] = useState('');
-  const [logs, setLogs] = usePersistentState<LogEntry[]>('backtest_logs', []);
   const logContainerRef = useRef<HTMLDivElement>(null);
-
-  const currentStrategy = strategies.find(s => s.id === selectedStrategy)!;
-  
-  const strategyParams = allStrategyParams[selectedStrategy] || (() => {
-    const defaultParams: Record<string, any> = {};
-    currentStrategy.parameters.forEach(param => {
-      defaultParams[param.key] = param.default;
-    });
-    return defaultParams;
-  })();
-  
-  const setStrategyParams = (params: Record<string, any>) => {
-    setAllStrategyParams(prev => ({
-      ...prev,
-      [selectedStrategy]: params
-    }));
-  };
+  const [expandedParamCard, setExpandedParamCard] = useState<'backtest' | 'strategy' | null>('backtest');
+  const {
+    selectedStrategy,
+    isIntroExpanded,
+    selectedETFs,
+    needsCustomEtfPool,
+    backtestParams,
+    strategyParams,
+    currentStrategy,
+    isRunning,
+    result,
+    progress,
+    progressText,
+    logs,
+    setIsIntroExpanded,
+    setSelectedETFs,
+    setBacktestParams,
+    setStrategyParams,
+    clearLogs,
+    handleStrategyChange,
+    runBacktest,
+    exportReport,
+  } = useBacktestPage();
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -90,120 +42,9 @@ export default function StrategyBacktest() {
     }
   }, [logs]);
 
-  const addLog = (level: LogEntry['level'], message: string) => {
-    const now = new Date();
-    const time = now.toLocaleTimeString('zh-CN', { hour12: false });
-    setLogs(prev => [...prev, { time, level, message }]);
-  };
-
-  const clearLogs = () => {
-    setLogs([]);
-  };
-
-  const handleStrategyChange = (strategyId: StrategyType) => {
-    setSelectedStrategy(strategyId);
-    setIsIntroExpanded(true);
-    setResult(null);
-    clearLogs();
-  };
-
-  const handleRunBacktest = async () => {
-    setIsRunning(true);
-    setProgress(0);
-    setProgressText('');
-    clearLogs();
-    setResult(null);
-
-    addLog('info', `开始回测策略: ${currentStrategy.name}`);
-    addLog('info', `已选择 ${selectedETFs.length} 只ETF: ${selectedETFs.join(', ')}`);
-    
-    if (selectedETFs.length === 0) {
-      addLog('error', '错误: 请至少选择一只ETF');
-      setIsRunning(false);
-      return;
-    }
-
-    addLog('info', `回测时间范围: ${backtestParams.startDate} 至 ${backtestParams.endDate}`);
-    addLog('info', `初始资金: ${backtestParams.initialCapital.toLocaleString()} 元`);
-
-    try {
-      setProgress(10);
-      setProgressText('正在初始化回测引擎...');
-      addLog('info', '正在初始化回测引擎...');
-      await new Promise(resolve => setTimeout(resolve, 200));
-
-      setProgress(20);
-      setProgressText('正在从服务器获取历史数据...');
-      addLog('info', '正在从服务器获取历史数据...');
-      
-      setProgress(35);
-      setProgressText('正在提交回测请求...');
-      addLog('info', '正在提交回测请求...');
-      
-      const apiResult = await apiClient.runBacktest({
-        strategy: selectedStrategy,
-        strategy_params: normalizeStrategyParams(strategyParams),
-        backtest_params: {
-          start_date: backtestParams.startDate,
-          end_date: backtestParams.endDate,
-          initial_capital: backtestParams.initialCapital,
-          commission_rate: defaultBacktestConfig.commission,
-          stamp_duty: defaultBacktestConfig.stampDuty,
-          slippage: defaultBacktestConfig.slippage,
-        },
-        etf_codes: selectedETFs,
-      });
-      
-      setProgress(75);
-      setProgressText('正在解析回测结果...');
-      addLog('info', '正在解析回测结果...');
-      
-      const backtestResult = adaptBacktestResult(apiResult);
-      
-      setProgress(100);
-      setProgressText('回测完成!');
-      addLog('success', '回测完成!');
-      
-      if (backtestResult.actualStartDate && backtestResult.actualEndDate) {
-        addLog('info', `实际回测时间: ${backtestResult.actualStartDate} 至 ${backtestResult.actualEndDate}`);
-      }
-      
-      setResult(backtestResult);
-      
-      if (backtestResult.equityCurve.length > 0) {
-        addLog('success', `总收益率: ${backtestResult.totalReturn.toFixed(2)}%`);
-        addLog('success', `年化收益: ${backtestResult.annualReturn.toFixed(2)}%`);
-        addLog('success', `最大回撤: ${backtestResult.maxDrawdown.toFixed(2)}%`);
-        addLog('success', `夏普比率: ${backtestResult.sharpeRatio.toFixed(2)}`);
-        addLog('info', `交易次数: ${backtestResult.totalTrades}`);
-      } else {
-        addLog('warning', '未能获取到有效数据，请检查日期范围和证券代码');
-      }
-    } catch (error) {
-      addLog('error', `回测失败: ${error}`);
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  const getLogColor = (level: LogEntry['level']) => {
-    switch (level) {
-      case 'info': return 'text-blue-600 dark:text-blue-400';
-      case 'warning': return 'text-yellow-600 dark:text-yellow-400';
-      case 'error': return 'text-red-600 dark:text-red-400';
-      case 'success': return 'text-green-600 dark:text-green-400';
-      default: return 'text-foreground';
-    }
-  };
-
-  const getLogPrefix = (level: LogEntry['level']) => {
-    switch (level) {
-      case 'info': return 'ℹ️';
-      case 'warning': return '⚠️';
-      case 'error': return '❌';
-      case 'success': return '✅';
-      default: return '';
-    }
+  const handleRunBacktest = () => {
+    setExpandedParamCard(null);
+    void runBacktest();
   };
 
   const renderStrategyCard = (strategy: Strategy) => {
@@ -233,48 +74,6 @@ export default function StrategyBacktest() {
         </div>
       </button>
     );
-  };
-
-  const handleExportReport = () => {
-    if (!result) return;
-    
-    const reportContent = [
-      `策略回测报告`,
-      `================`,
-      ``,
-      `策略名称: ${currentStrategy.name}`,
-      `回测时间: ${result.actualStartDate || backtestParams.startDate} 至 ${result.actualEndDate || backtestParams.endDate}`,
-      `初始资金: ¥${backtestParams.initialCapital.toLocaleString()}`,
-      ``,
-      `=== 回测结果 ===`,
-      `总收益率: ${result.totalReturn.toFixed(2)}%`,
-      `年化收益: ${result.annualReturn.toFixed(2)}%`,
-      `最大回撤: ${result.maxDrawdown.toFixed(2)}%`,
-      `夏普比率: ${result.sharpeRatio.toFixed(2)}`,
-      `索提诺比率: ${result.sortinoRatio.toFixed(2)}`,
-      `卡玛比率: ${result.calmarRatio.toFixed(2)}`,
-      `胜率: ${result.winRate.toFixed(2)}%`,
-      `盈亏比: ${result.profitFactor.toFixed(2)}`,
-      `交易次数: ${result.totalTrades}`,
-      `最终资产: ¥${result.finalAsset.toLocaleString()}`,
-      ``,
-      `=== 交易记录 ===`,
-      ...result.trades.map((trade, index) => 
-        `${index + 1}. ${trade.date} ${trade.type === 'buy' ? '买入' : '卖出'} ${trade.name}(${trade.code}) 价格:¥${trade.price} 数量:${trade.shares} 金额:¥${trade.amount.toFixed(2)}`
-      ),
-    ].join('\n');
-    
-    const blob = new Blob([reportContent], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `回测报告_${currentStrategy.name}_${new Date().toISOString().split('T')[0]}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    
-    addLog('success', '报告已导出');
   };
 
   return (
@@ -322,7 +121,7 @@ export default function StrategyBacktest() {
             <Button
               size="lg"
               onClick={handleRunBacktest}
-              disabled={isRunning || selectedETFs.length === 0}
+              disabled={isRunning || (needsCustomEtfPool && selectedETFs.length === 0)}
               className="bg-purple-500 hover:bg-purple-600 shadow-lg"
             >
               {isRunning ? (
@@ -360,23 +159,40 @@ export default function StrategyBacktest() {
             )}
           </Card>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
             <BacktestParams
               params={backtestParams}
               onChange={setBacktestParams}
+              collapsible
+              open={expandedParamCard === 'backtest'}
+              onOpenChange={(open) => setExpandedParamCard(open ? 'backtest' : null)}
             />
             <StrategyParams
               strategy={currentStrategy}
               params={strategyParams}
               onChange={setStrategyParams}
+              collapsible
+              open={expandedParamCard === 'strategy'}
+              onOpenChange={(open) => setExpandedParamCard(open ? 'strategy' : null)}
             />
           </div>
 
-          <ETFSelector
-            etfs={etfPool}
-            selectedCodes={selectedETFs}
-            onChange={setSelectedETFs}
-          />
+          {needsCustomEtfPool ? (
+            <ETFSelector
+              etfs={etfPool}
+              selectedCodes={selectedETFs}
+              onChange={setSelectedETFs}
+            />
+          ) : (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">标的配置</CardTitle>
+                <CardDescription>
+                  当前策略使用内置证券池，已自动按策略规则加载，不需要手动配置 ETF 池。
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )}
 
           {isRunning && (
             <Card className="border-primary/50 bg-gradient-to-r from-primary/5 to-transparent">
@@ -455,7 +271,7 @@ export default function StrategyBacktest() {
           {result && result.equityCurve.length > 0 && (
             <>
               <div className="flex justify-end">
-                <Button variant="outline" size="lg" onClick={handleExportReport}>
+                <Button variant="outline" size="lg" onClick={exportReport}>
                   <Download className="mr-2 h-5 w-5" />
                   📄 导出报告
                 </Button>

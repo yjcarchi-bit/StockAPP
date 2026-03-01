@@ -1,4 +1,5 @@
 import React from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -18,19 +19,45 @@ interface BacktestParamsProps {
     benchmark: string;
   };
   onChange: (params: any) => void;
+  collapsible?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export default function BacktestParams({ params, onChange }: BacktestParamsProps) {
+export default function BacktestParams({
+  params,
+  onChange,
+  collapsible = false,
+  open = true,
+  onOpenChange,
+}: BacktestParamsProps) {
   const updateParam = (key: string, value: any) => {
     onChange({ ...params, [key]: value });
   };
 
+  const isOpen = collapsible ? open : true;
+
+  const toggleOpen = () => {
+    if (!collapsible) {
+      return;
+    }
+    onOpenChange?.(!isOpen);
+  };
+
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>📅 回测参数</CardTitle>
+      <CardHeader
+        className={collapsible ? 'cursor-pointer hover:bg-accent transition-colors' : undefined}
+        onClick={toggleOpen}
+      >
+        <div className="flex items-center gap-2">
+          {collapsible ? (
+            isOpen ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />
+          ) : null}
+          <CardTitle>📅 回测参数</CardTitle>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      {isOpen && <CardContent className="space-y-4">
         <div>
           <Label htmlFor="startDate">开始日期</Label>
           <Input
@@ -102,7 +129,7 @@ export default function BacktestParams({ params, onChange }: BacktestParamsProps
             </div>
           </details>
         </div>
-      </CardContent>
+      </CardContent>}
     </Card>
   );
 }

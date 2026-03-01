@@ -16,6 +16,20 @@ export {
   setPersistentState,
 } from './usePersistentState';
 
+export {
+  useBacktestPage,
+  getLogColor,
+  getLogPrefix,
+} from './useBacktestPage';
+
+export {
+  useComparePage,
+} from './useComparePage';
+
+export {
+  useOptimizationPage,
+} from './useOptimizationPage';
+
 export type {
   RealtimeQuote,
   StrategySignal,

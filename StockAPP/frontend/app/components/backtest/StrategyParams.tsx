@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Label } from '../ui/label';
 import { Slider } from '../ui/slider';
-import { Switch } from '../ui/switch';
 import {
   Select,
   SelectContent,
@@ -16,9 +16,19 @@ interface StrategyParamsProps {
   strategy: Strategy;
   params: Record<string, any>;
   onChange: (params: Record<string, any>) => void;
+  collapsible?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export default function StrategyParams({ strategy, params, onChange }: StrategyParamsProps) {
+export default function StrategyParams({
+  strategy,
+  params,
+  onChange,
+  collapsible = false,
+  open = true,
+  onOpenChange,
+}: StrategyParamsProps) {
   const updateParam = (key: string, value: any) => {
     onChange({ ...params, [key]: value });
   };
@@ -38,13 +48,29 @@ export default function StrategyParams({ strategy, params, onChange }: StrategyP
   const sliderParams = strategy.parameters.filter(p => p.type === 'slider');
   const booleanParams = strategy.parameters.filter(p => p.type === 'boolean');
   const selectParams = strategy.parameters.filter(p => p.type === 'select');
+  const isOpen = collapsible ? open : true;
+
+  const toggleOpen = () => {
+    if (!collapsible) {
+      return;
+    }
+    onOpenChange?.(!isOpen);
+  };
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>📊 策略参数</CardTitle>
+      <CardHeader
+        className={collapsible ? 'cursor-pointer hover:bg-accent transition-colors' : undefined}
+        onClick={toggleOpen}
+      >
+        <div className="flex items-center gap-2">
+          {collapsible ? (
+            isOpen ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />
+          ) : null}
+          <CardTitle>📊 策略参数</CardTitle>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-6">
+      {isOpen && <CardContent className="space-y-6">
         {sliderParams.length > 0 && (
           <div className="space-y-4">
             {sliderParams.map(param => {
@@ -137,7 +163,7 @@ export default function StrategyParams({ strategy, params, onChange }: StrategyP
             })}
           </div>
         )}
-      </CardContent>
+      </CardContent>}
     </Card>
   );
 }

@@ -1,164 +1,37 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Play, Download } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
-import { strategies, etfPool, type StrategyType } from '../../utils/strategyConfig';
+import { strategies, etfPool } from '../../utils/strategyConfig';
 import { Progress } from '../ui/progress';
-import { usePersistentState } from '../../hooks';
-import { apiClient } from '../../utils/apiClient';
-
-interface OptimizationResult {
-  params: Record<string, any>;
-  totalReturn: number;
-  sharpeRatio: number;
-  maxDrawdown: number;
-}
-
-const DEFAULT_OPTIMIZATION_PARAMS = {
-  startDate: '2021-01-01',
-  endDate: '2024-01-01',
-};
-
-function normalizeParams(params: Record<string, any>): Record<string, any> {
-  const mapped = { ...params };
-  if (Object.prototype.hasOwnProperty.call(mapped, 'stop_loss')) {
-    mapped.stop_loss_ratio = mapped.stop_loss;
-    delete mapped.stop_loss;
-  }
-  if (Object.prototype.hasOwnProperty.call(mapped, 'use_short_momentum')) {
-    mapped.use_short_momentum_filter = mapped.use_short_momentum;
-    delete mapped.use_short_momentum;
-  }
-  if (Object.prototype.hasOwnProperty.call(mapped, 'use_atr_stop')) {
-    mapped.use_atr_stop_loss = mapped.use_atr_stop;
-    delete mapped.use_atr_stop;
-  }
-  return mapped;
-}
+import { useOptimizationPage } from '../../hooks';
 
 export default function ParameterOptimization() {
-  const [selectedStrategy, setSelectedStrategy] = usePersistentState<StrategyType>('optimization_strategy', 'etf_rotation');
-  const [selectedETF, setSelectedETF] = usePersistentState('optimization_etf', '510300');
-  const [dateRange, setDateRange] = usePersistentState('optimization_date_range', DEFAULT_OPTIMIZATION_PARAMS);
-  const [initialCapital, setInitialCapital] = usePersistentState('optimization_capital', 100000);
-  const [optimizationMethod, setOptimizationMethod] = usePersistentState<'grid' | 'random'>('optimization_method', 'grid');
-  const [optimizationTarget, setOptimizationTarget] = usePersistentState<'sharpe' | 'return'>('optimization_target', 'sharpe');
-  const [isOptimizing, setIsOptimizing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [results, setResults] = useState<OptimizationResult[]>([]);
-  const [bestResult, setBestResult] = useState<OptimizationResult | null>(null);
-
-  const currentStrategy = strategies.find(s => s.id === selectedStrategy)!;
-
-  const generateParamGrid = () => {
-    const strategy = strategies.find(s => s.id === selectedStrategy)!;
-    const grids: Record<string, any[]> = {};
-    const fixedParams: Record<string, any> = {};
-    let totalCombinations = 1;
-
-    strategy.parameters.forEach(param => {
-      if (param.type === 'slider' && param.min !== undefined && param.max !== undefined && param.step !== undefined) {
-        const values = [];
-        for (let v = param.min; v <= param.max; v += param.step * 2) {
-          values.push(v);
-        }
-        grids[param.key] = values;
-        totalCombinations *= values.length;
-      } else if (param.type === 'select' && param.options) {
-        grids[param.key] = param.options.map(o => o.value);
-        totalCombinations *= param.options.length;
-      } else {
-        fixedParams[param.key] = param.default;
-      }
-    });
-
-    return { grids, fixedParams, totalCombinations };
-  };
-
-  const handleOptimize = async () => {
-    setIsOptimizing(true);
-    setProgress(0);
-    
-    try {
-      const { grids, fixedParams } = generateParamGrid();
-      setProgress(30);
-      
-      const optimizeResult = await apiClient.optimizeBacktest({
-        strategy: selectedStrategy,
-        param_grid: normalizeParams(grids),
-        fixed_params: normalizeParams(fixedParams),
-        backtest_params: {
-          start_date: dateRange.startDate,
-          end_date: dateRange.endDate,
-          initial_capital: initialCapital,
-          commission_rate: 0.0003,
-          stamp_duty: 0.001,
-          slippage: 0.001,
-        },
-        etf_codes: [selectedETF],
-        optimization_metric: optimizationTarget === 'sharpe' ? 'sharpe_ratio' : 'total_return',
-        method: optimizationMethod,
-        n_iter: 20,
-      });
-      
-      setProgress(80);
-      
-      const allResults: OptimizationResult[] = optimizeResult.all_results.map((row: Record<string, any>) => {
-        const metricKeys = new Set([
-          'total_return',
-          'annual_return',
-          'max_drawdown',
-          'sharpe_ratio',
-          'sortino_ratio',
-          'calmar_ratio',
-          'win_rate',
-          'profit_factor',
-          'total_trades',
-          'final_value',
-          'benchmark_return',
-        ]);
-        const params: Record<string, any> = {};
-        Object.entries(row).forEach(([key, value]) => {
-          if (!metricKeys.has(key)) {
-            params[key] = value;
-          }
-        });
-        return {
-          params,
-          totalReturn: Number(row.total_return ?? 0),
-          sharpeRatio: Number(row.sharpe_ratio ?? 0),
-          maxDrawdown: Math.abs(Number(row.max_drawdown ?? 0)),
-        };
-      });
-      
-      const sortedResults = allResults.sort((a, b) => {
-        if (optimizationTarget === 'sharpe') {
-          return b.sharpeRatio - a.sharpeRatio;
-        }
-        return b.totalReturn - a.totalReturn;
-      });
-      
-      setResults(sortedResults);
-      setBestResult({
-        params: optimizeResult.best_params,
-        totalReturn: optimizeResult.best_metrics.total_return,
-        sharpeRatio: optimizeResult.best_metrics.sharpe_ratio,
-        maxDrawdown: Math.abs(optimizeResult.best_metrics.max_drawdown),
-      });
-      setProgress(100);
-    } catch (error) {
-      console.error('参数优化失败:', error);
-      setResults([]);
-      setBestResult(null);
-    } finally {
-      setIsOptimizing(false);
-    }
-  };
-
-  const { totalCombinations } = generateParamGrid();
+  const {
+    selectedStrategy,
+    selectedETF,
+    needsCustomEtfPool,
+    dateRange,
+    initialCapital,
+    optimizationMethod,
+    optimizationTarget,
+    isOptimizing,
+    progress,
+    results,
+    bestResult,
+    currentStrategy,
+    totalCombinations,
+    setSelectedStrategy,
+    setSelectedETF,
+    setDateRange,
+    setInitialCapital,
+    setOptimizationMethod,
+    setOptimizationTarget,
+    optimize,
+  } = useOptimizationPage();
 
   return (
     <div className="space-y-6">
@@ -237,7 +110,10 @@ export default function ParameterOptimization() {
               
               <div>
                 <Label>优化方法</Label>
-                <Select value={optimizationMethod} onValueChange={(v: any) => setOptimizationMethod(v)}>
+                <Select
+                  value={optimizationMethod}
+                  onValueChange={(value) => setOptimizationMethod(value as 'grid' | 'random')}
+                >
                   <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
@@ -250,7 +126,10 @@ export default function ParameterOptimization() {
 
               <div>
                 <Label>优化目标</Label>
-                <Select value={optimizationTarget} onValueChange={(v: any) => setOptimizationTarget(v)}>
+                <Select
+                  value={optimizationTarget}
+                  onValueChange={(value) => setOptimizationTarget(value as 'sharpe' | 'return')}
+                >
                   <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
@@ -294,26 +173,32 @@ export default function ParameterOptimization() {
                 </div>
               </div>
 
-              <div className="mt-4">
-                <Label>证券代码</Label>
-                <Select value={selectedETF} onValueChange={setSelectedETF}>
-                  <SelectTrigger className="mt-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {etfPool.slice(0, 5).map(etf => (
-                      <SelectItem key={etf.code} value={etf.code}>
-                        {etf.code} - {etf.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {needsCustomEtfPool ? (
+                <div className="mt-4">
+                  <Label>ETF池配置（ETF轮动策略）</Label>
+                  <Select value={selectedETF} onValueChange={setSelectedETF}>
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {etfPool.slice(0, 5).map(etf => (
+                        <SelectItem key={etf.code} value={etf.code}>
+                          {etf.code} - {etf.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <div className="mt-4 p-3 bg-muted rounded text-sm text-muted-foreground">
+                  当前策略使用内置证券池，优化时无需单独配置 ETF 池。
+                </div>
+              )}
 
               <Button
                 className="w-full mt-6 bg-primary hover:bg-primary/90"
                 size="lg"
-                onClick={handleOptimize}
+                onClick={optimize}
                 disabled={isOptimizing}
               >
                 <Play className="mr-2 h-5 w-5" />
