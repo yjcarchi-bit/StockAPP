@@ -3,3 +3,5 @@
 .env.development
 .env.production
 !.env.example
+data/.cache/
+data/.cache/**

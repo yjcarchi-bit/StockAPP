@@ -78,6 +78,8 @@ npm run dev
 
 后端数据源支持从项目根目录 `.env` 读取配置（参考 `.env.example`）：
 
+- `DATA_STORAGE_BACKEND`：存储后端（默认 `mysql`，可选 `dual/pkl`）
+- `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD`：本地 MySQL 连接参数
 - `PROXY_AUTH_CODE`：akshare 代理补丁认证码
 - `TUSHARE_TOKEN`：tushare token（历史成分股需要）
 - `AKSHARE_ENABLE_PROXY`：是否启用代理（`true/false`）

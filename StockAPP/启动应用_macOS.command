@@ -366,7 +366,7 @@ cd "$APP_DIR/backend"
 check_backend_deps() {
     local missing_deps=()
     
-    for dep in fastapi uvicorn pydantic pandas numpy efinance apscheduler; do
+    for dep in fastapi uvicorn pydantic pandas numpy efinance apscheduler sqlalchemy pymysql; do
         $PYTHON_CMD -c "import $dep" 2>/dev/null
         if [ $? -ne 0 ]; then
             missing_deps+=("$dep")

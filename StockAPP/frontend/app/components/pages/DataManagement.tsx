@@ -15,6 +15,7 @@ function dateToISO(date: Date): string {
 export default function DataManagement() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedCode, setSelectedCode] = useState('510300');
   const [updateStatus, setUpdateStatus] = useState<ApiUpdateStatus | null>(null);
@@ -88,9 +89,24 @@ export default function DataManagement() {
     }
   };
 
+  const handleMigratePkl = async () => {
+    setIsMigrating(true);
+    setError(null);
+    try {
+      await apiClient.triggerPklMigration();
+      await loadStatusAndCache();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '触发PKL迁移失败');
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
   const latestRows = preview?.data?.slice(-5).reverse() || [];
   const cachedCount = cacheInfo?.file_count ?? 0;
   const totalSize = cacheInfo?.total_size_mb ?? 0;
+  const symbolCount = cacheInfo?.symbol_count ?? 0;
+  const rowCount = cacheInfo?.row_count ?? 0;
 
   return (
     <div className="space-y-6">
@@ -185,6 +201,10 @@ export default function DataManagement() {
                   {cacheInfo?.cache_dir ?? '-'}
                 </span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">存储后端:</span>
+                <span className="font-medium text-foreground">{cacheInfo?.storage_backend ?? 'pkl'}</span>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -227,6 +247,14 @@ export default function DataManagement() {
               >
                 {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : '刷新状态'}
               </Button>
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={handleMigratePkl}
+                disabled={isMigrating}
+              >
+                {isMigrating ? <Loader2 className="h-4 w-4 animate-spin" /> : '迁移PKL到MySQL'}
+              </Button>
             </div>
           )}
         </CardContent>
@@ -261,6 +289,12 @@ export default function DataManagement() {
                   <div className="font-medium text-foreground">缓存文件</div>
                   <div className="text-sm text-muted-foreground">
                     共 {cachedCount} 个缓存文件，约 {totalSize.toFixed(2)} MB
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    MySQL已入库 {symbolCount} 个标的 / {rowCount.toLocaleString()} 条日线
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    最近同步: {cacheInfo?.last_sync_at ? cacheInfo.last_sync_at.slice(0, 19).replace('T', ' ') : '-'}
                   </div>
                 </div>
               </div>
