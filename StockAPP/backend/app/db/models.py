@@ -109,6 +109,52 @@ class IndexComponent(Base):
     )
 
 
+class MacroObservation(Base):
+    __tablename__ = "macro_observations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    api_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    period_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    dimension_key: Mapped[str] = mapped_column(String(191), nullable=False, default="")
+    obs_date: Mapped[Date] = mapped_column(Date, nullable=True)
+    obs_month: Mapped[str] = mapped_column(String(6), nullable=True)
+    obs_quarter: Mapped[str] = mapped_column(String(8), nullable=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    ingested_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("api_name", "period_key", "dimension_key", name="uq_macro_observations"),
+        Index("idx_macro_obs_api_period", "api_name", "period_key"),
+        Index("idx_macro_obs_date", "obs_date"),
+        Index("idx_macro_obs_month", "obs_month"),
+        Index("idx_macro_obs_quarter", "obs_quarter"),
+    )
+
+
+class FinancialObservation(Base):
+    __tablename__ = "financial_observations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    api_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    ts_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    period_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    dimension_key: Mapped[str] = mapped_column(String(191), nullable=False, default="")
+    ann_date: Mapped[Date] = mapped_column(Date, nullable=True)
+    end_date: Mapped[Date] = mapped_column(Date, nullable=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    ingested_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("api_name", "ts_code", "period_key", "dimension_key", name="uq_financial_observations"),
+        Index("idx_financial_obs_api_code_period", "api_name", "ts_code", "period_key"),
+        Index("idx_financial_obs_ts_code", "ts_code"),
+        Index("idx_financial_obs_ann_date", "ann_date"),
+        Index("idx_financial_obs_end_date", "end_date"),
+    )
+
+
 class SyncJob(Base):
     __tablename__ = "sync_jobs"
 
@@ -142,6 +188,8 @@ __all__ = [
     "Instrument",
     "DailyBar",
     "IndexComponent",
+    "MacroObservation",
+    "FinancialObservation",
     "SyncJob",
     "SyncCheckpoint",
 ]

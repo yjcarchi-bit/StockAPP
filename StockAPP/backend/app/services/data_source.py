@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -73,6 +75,7 @@ class DataSourceService:
         self.data_source = DataSource()
         self.storage_backend = db_settings.storage_backend
         self.repo: Optional[MarketDataRepository] = MarketDataRepository() if is_mysql_enabled() else None
+        self.structured_log_json = str(os.getenv("DATA_LOG_JSON", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
     @property
     def _db_read_enabled(self) -> bool:
@@ -115,12 +118,26 @@ class DataSourceService:
     def get_stock_history(self, code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         return self._get_history("STOCK", code, start_date, end_date)
 
+    def get_index_history(self, code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        return self._get_history("INDEX", code, start_date, end_date)
+
     def _get_history(self, security_type: str, code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         code = str(code).strip().zfill(6)
         start_norm = self._normalize_date(start_date)
         end_norm = self._normalize_date(end_date)
+        requested_days = self._date_span_days(start_norm, end_norm)
+        self._log_history_event(
+            security_type,
+            code,
+            5,
+            "request_init",
+            start_date=start_norm,
+            end_date=end_norm,
+            requested_days=requested_days,
+        )
 
         db_rows: List[Dict[str, Any]] = []
+        local_dates: set[str] = set()
         if self._db_read_enabled and self.repo:
             db_rows = self._safe_repo_call(
                 self.repo.get_daily_bars,
@@ -130,15 +147,86 @@ class DataSourceService:
                 end_norm,
                 default=[],
             )
+            local_dates = self._trade_dates_set(db_rows)
+            self._log_history_event(
+                security_type,
+                code,
+                15,
+                "mysql_cache_scan",
+                local_rows=len(db_rows),
+                local_distinct_days=len(local_dates),
+            )
             if self._has_full_coverage(db_rows, start_norm, end_norm):
+                self._log_history_event(
+                    security_type,
+                    code,
+                    100,
+                    "cache_hit_full_coverage",
+                    local_distinct_days=len(local_dates),
+                    need_api_days=0,
+                    returned_rows=len(db_rows),
+                )
                 return self._project_history_rows(db_rows)
+        else:
+            self._log_history_event(
+                security_type,
+                code,
+                15,
+                "mysql_cache_skip",
+                reason="db_read_disabled",
+            )
 
+        self._log_history_event(
+            security_type,
+            code,
+            30,
+            "source_fetch_start",
+            provider="DataSource",
+        )
+        source_started_at = time.perf_counter()
         source_rows = self._fetch_from_source(security_type, code, start_norm, end_norm)
+        source_cost = time.perf_counter() - source_started_at
+        self._log_history_event(
+            security_type,
+            code,
+            70,
+            "source_fetch_done",
+            source_rows=len(source_rows),
+            elapsed_seconds=round(source_cost, 3),
+        )
         if source_rows:
+            source_dates = self._trade_dates_set(source_rows)
+            local_hit_days = len(source_dates & local_dates) if local_dates else 0
+            need_api_days = max(len(source_dates) - local_hit_days, 0)
+            self._log_history_event(
+                security_type,
+                code,
+                80,
+                "source_compare_local",
+                source_distinct_days=len(source_dates),
+                local_hit_days=local_hit_days,
+                need_api_days=need_api_days,
+            )
             info_name = self.get_etf_info(code).get("name", code) if security_type == "ETF" else code
-            self._upsert_bars(security_type, code, source_rows, info_name)
+            affected_rows = self._upsert_bars(security_type, code, source_rows, info_name)
+            self._log_history_event(
+                security_type,
+                code,
+                100,
+                "history_ready_from_source",
+                returned_rows=len(source_rows),
+                mysql_affected_rows=affected_rows,
+            )
             return self._project_history_rows(source_rows)
 
+        self._log_history_event(
+            security_type,
+            code,
+            100,
+            "source_empty_use_cache",
+            returned_rows=len(db_rows),
+            local_distinct_days=len(local_dates),
+        )
         return self._project_history_rows(db_rows)
 
     def _fetch_from_source(self, security_type: str, code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -169,7 +257,13 @@ class DataSourceService:
                 return []
             return self._dataframe_to_rows(df)
         except Exception as exc:
-            print(f"获取{security_type}数据失败[{code}]: {exc}")
+            self._log_history_event(
+                security_type,
+                code,
+                75,
+                "source_fetch_error",
+                error=str(exc),
+            )
             return []
 
     def _dataframe_to_rows(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -212,10 +306,28 @@ class DataSourceService:
         rows.sort(key=lambda x: x["date"])
         return rows
 
-    def _upsert_bars(self, security_type: str, code: str, rows: List[Dict[str, Any]], name: str) -> None:
+    def _upsert_bars(self, security_type: str, code: str, rows: List[Dict[str, Any]], name: str) -> int:
         if not rows or not self._db_write_enabled or not self.repo:
-            return
-        self._safe_repo_call(
+            if not rows:
+                self._log_history_event(security_type, code, 90, "mysql_upsert_skip", reason="no_rows")
+            else:
+                self._log_history_event(security_type, code, 90, "mysql_upsert_skip", reason="db_write_disabled")
+            return 0
+
+        def _on_db_progress(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = 90 + int((done / total) * 9)
+            self._log_history_event(
+                security_type,
+                code,
+                min(pct, 99),
+                "mysql_upsert_progress",
+                upsert_done=done,
+                upsert_total=total,
+            )
+
+        affected = self._safe_repo_call(
             self.repo.upsert_daily_bars,
             code,
             security_type,
@@ -223,7 +335,10 @@ class DataSourceService:
             name=name,
             market=self._infer_market(code),
             source="datasource",
+            progress_cb=_on_db_progress,
+            default=0,
         )
+        return int(affected or 0)
 
     def search_stocks(self, keyword: str, limit: int = 20) -> List[Dict[str, str]]:
         keyword = (keyword or "").strip()
@@ -272,12 +387,12 @@ class DataSourceService:
 
         return result
 
-    def get_hs300_constituents(self) -> List[Dict[str, str]]:
+    def get_index_constituents(self, index_code: str = "000300", date: Optional[str] = None) -> List[Dict[str, str]]:
         code_name_map = self._fetch_quote_name_map()
         try:
             components = self.data_source.get_index_components(
-                index_code="000300",
-                date=None,
+                index_code=index_code,
+                date=date,
                 use_cache=self._source_cache_enabled,
             )
             if components:
@@ -301,25 +416,116 @@ class DataSourceService:
                             "security_type": "STOCK",
                             "name": item["name"],
                             "industry": "",
-                            "source": "hs300",
+                            "source": f"index_{index_code}",
                         }
                         for item in result
                     ]
-                    self._safe_repo_call(self.repo.upsert_instruments, rows, source="hs300")
+                    self._safe_repo_call(self.repo.upsert_instruments, rows, source=f"index_{index_code}")
                     self._safe_repo_call(
                         self.repo.upsert_index_components,
-                        "000300",
+                        index_code,
                         [item["code"] for item in result],
                         datetime.now().date().isoformat(),
-                        "hs300",
+                        f"index_{index_code}",
                     )
                 return result
         except Exception as exc:
-            print(f"获取沪深300成分失败: {exc}")
+            self._log_history_event(
+                "INDEX",
+                index_code,
+                0,
+                "index_components_error",
+                error=str(exc),
+            )
 
-        return DEFAULT_HS300
+        if index_code == "000300":
+            return DEFAULT_HS300
+        return []
+
+    def get_index_constituents_history(
+        self,
+        index_code: str,
+        start_date: str,
+        end_date: str,
+        freq: str = "M",
+    ) -> List[Dict[str, str]]:
+        """
+        获取区间内指数成分股（按出现频次和最近出现时间排序）。
+        用于回测时减少“用当前成分股回测历史”的前视偏差。
+        """
+        code_name_map = self._fetch_quote_name_map()
+        try:
+            history = self.data_source.get_index_components_history(
+                index_code=index_code,
+                start_date=start_date,
+                end_date=end_date,
+                freq=freq,
+                use_cache=self._source_cache_enabled,
+            )
+            if history:
+                count_map: Dict[str, int] = {}
+                last_seen_map: Dict[str, str] = {}
+                for dt, codes in history.items():
+                    for code in (codes or []):
+                        norm = str(code).strip().zfill(6)
+                        if not norm:
+                            continue
+                        count_map[norm] = count_map.get(norm, 0) + 1
+                        if dt > last_seen_map.get(norm, ""):
+                            last_seen_map[norm] = dt
+
+                ranked_codes = sorted(
+                    count_map.keys(),
+                    key=lambda c: (count_map[c], last_seen_map.get(c, ""), c),
+                    reverse=True,
+                )
+
+                result: List[Dict[str, str]] = []
+                for code in ranked_codes:
+                    result.append(
+                        {
+                            "code": code,
+                            "name": code_name_map.get(code, code),
+                            "market": self._infer_market(code),
+                            "industry": "",
+                        }
+                    )
+
+                if result and self._db_write_enabled and self.repo:
+                    rows = [
+                        {
+                            "code": item["code"],
+                            "market": item["market"],
+                            "security_type": "STOCK",
+                            "name": item["name"],
+                            "industry": "",
+                            "source": f"index_hist_{index_code}",
+                        }
+                        for item in result
+                    ]
+                    self._safe_repo_call(self.repo.upsert_instruments, rows, source=f"index_hist_{index_code}")
+                return result
+        except Exception as exc:
+            self._log_history_event(
+                "INDEX",
+                index_code,
+                0,
+                "index_components_history_error",
+                error=str(exc),
+            )
+
+        # 回退：至少取结束日成分，避免空池
+        return self.get_index_constituents(index_code=index_code, date=end_date)
+
+    def get_hs300_constituents(self) -> List[Dict[str, str]]:
+        return self.get_index_constituents("000300")
 
     def clear_cache(self) -> Dict[str, Any]:
+        if self.storage_backend == "mysql":
+            return {
+                "removed_files": 0,
+                "message": "MySQL单栈模式已启用，无需清理PKL缓存",
+            }
         removed_files = self.data_source.clear_cache()
         return {
             "removed_files": int(removed_files or 0),
@@ -327,7 +533,15 @@ class DataSourceService:
         }
 
     def get_cache_info(self) -> Dict[str, Any]:
-        legacy_info = self.data_source.get_cache_info()
+        if self.storage_backend == "mysql":
+            legacy_info = {
+                "cache_dir": "",
+                "file_count": 0,
+                "total_size_mb": 0,
+                "expire_hours": 0,
+            }
+        else:
+            legacy_info = self.data_source.get_cache_info()
         stats = {"symbol_count": 0, "row_count": 0, "last_sync_at": None}
         if self._db_read_enabled and self.repo:
             stats = self._safe_repo_call(self.repo.get_cache_stats, default=stats)
@@ -480,13 +694,79 @@ class DataSourceService:
             return "SH"
         return "SZ"
 
-    @staticmethod
-    def _safe_repo_call(func, *args, default=None, **kwargs):
+    def _safe_repo_call(self, func, *args, default=None, **kwargs):
         try:
             return func(*args, **kwargs)
         except Exception as exc:
-            print(f"DB操作失败: {exc}")
+            if self.structured_log_json:
+                payload = {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "module": "history_daily_k",
+                    "event": "db_operation_error",
+                    "progress_pct": 0,
+                    "storage_backend": self.storage_backend,
+                    "error": str(exc),
+                }
+                print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            else:
+                print(f"DB操作失败: {exc}")
             return default
+
+    @staticmethod
+    def _trade_dates_set(rows: List[Dict[str, Any]]) -> set[str]:
+        dates: set[str] = set()
+        for row in rows:
+            raw = str(row.get("date", ""))[:10]
+            try:
+                dates.add(datetime.strptime(raw, "%Y-%m-%d").date().isoformat())
+            except Exception:
+                continue
+        return dates
+
+    @staticmethod
+    def _date_span_days(start_date: str, end_date: str) -> int:
+        try:
+            start = datetime.strptime(start_date[:10], "%Y-%m-%d").date()
+            end = datetime.strptime(end_date[:10], "%Y-%m-%d").date()
+            if end < start:
+                return 0
+            return (end - start).days + 1
+        except Exception:
+            return 0
+
+    def _log_history_event(
+        self,
+        security_type: str,
+        code: str,
+        progress_pct: int,
+        event: str,
+        **fields: Any,
+    ) -> None:
+        """统一输出历史日K同步日志，支持文本与JSON两种格式。"""
+        pct = max(0, min(int(progress_pct), 100))
+        if self.structured_log_json:
+            payload: Dict[str, Any] = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "module": "history_daily_k",
+                "event": event,
+                "progress_pct": pct,
+                "security_type": str(security_type).upper(),
+                "code": str(code).zfill(6),
+                "storage_backend": self.storage_backend,
+            }
+            payload.update(fields)
+            try:
+                print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            except Exception:
+                safe_payload = {k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v)) for k, v in payload.items()}
+                print(json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":")))
+            return
+
+        details = " ".join(f"{k}={v}" for k, v in fields.items())
+        line = f"[历史日K][{str(security_type).upper()}][{str(code).zfill(6)}] {pct:>3}% {event}"
+        if details:
+            line = f"{line} {details}"
+        print(line)
 
     @staticmethod
     def _get_default_stocks() -> List[Dict[str, str]]:

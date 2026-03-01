@@ -7,7 +7,7 @@ A股量化回测平台后端 API
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import backtest, data, strategies, data_update, websocket
+from .routers import backtest, data, data_update, financial, macro, strategies, websocket
 from .config import settings
 import sys
 import os
@@ -53,6 +53,8 @@ app.add_middleware(
 
 app.include_router(backtest.router, prefix="/api/backtest", tags=["回测"])
 app.include_router(data.router, prefix="/api/data", tags=["数据"])
+app.include_router(financial.router, prefix="/api/financial", tags=["财务数据"])
+app.include_router(macro.router, prefix="/api/macro", tags=["宏观数据"])
 app.include_router(strategies.router, prefix="/api/strategies", tags=["策略"])
 app.include_router(data_update.router, prefix="/api/data-update", tags=["数据更新"])
 app.include_router(websocket.router, prefix="/ws", tags=["实时数据"])

@@ -36,7 +36,7 @@ _load_project_env()
 
 @dataclass
 class DBSettings:
-    storage_backend: str = os.getenv("DATA_STORAGE_BACKEND", "dual").strip().lower()
+    storage_backend: str = os.getenv("DATA_STORAGE_BACKEND", "mysql").strip().lower()
     mysql_host: str = os.getenv("MYSQL_HOST", "127.0.0.1")
     mysql_port: int = int(os.getenv("MYSQL_PORT", "3306"))
     mysql_db: str = os.getenv("MYSQL_DATABASE", "stockapp")

@@ -3,6 +3,7 @@
 ==========
 """
 
+import os
 from typing import List
 
 
@@ -23,6 +24,7 @@ class Settings:
     ]
     
     debug: bool = False
+    tushare_timeout: int = int(os.getenv("TUSHARE_TIMEOUT", "30"))
 
 
 settings = Settings()

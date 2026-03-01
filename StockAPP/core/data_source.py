@@ -12,10 +12,12 @@
 - 支持故障转移机制（efinance失败时自动切换akshare）
 """
 
+import json
 import os
 import pickle
 import hashlib
 import time
+import warnings
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
@@ -161,6 +163,7 @@ class DataSource:
             config: 数据配置，为None时使用默认配置
         """
         self.config = config or DataConfig()
+        self.structured_log_json = _env_bool("DATA_LOG_JSON", False)
         
         self._init_proxy_patch()
         
@@ -174,6 +177,29 @@ class DataSource:
         
         self._last_request_time = 0
         self._request_interval = self.config.request_delay
+
+    def _log(self, level: str, event: str, message: str, **fields: Any) -> None:
+        """统一日志输出；DATA_LOG_JSON=true 时输出 JSON。"""
+        if self.structured_log_json:
+            payload: Dict[str, Any] = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "module": "core_data_source",
+                "level": str(level).lower(),
+                "event": str(event),
+                "message": str(message),
+            }
+            payload.update(fields)
+            try:
+                print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            except Exception:
+                safe_payload = {
+                    k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                    for k, v in payload.items()
+                }
+                print(json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":")))
+            return
+
+        print(message)
     
     def _init_proxy_patch(self) -> None:
         """
@@ -186,12 +212,20 @@ class DataSource:
             return
         
         if not self.config.proxy_host or not self.config.proxy_auth_code:
-            print("⚠️ 代理已启用但缺少proxy_host或proxy_auth_code配置，跳过代理初始化")
+            self._log(
+                "warning",
+                "proxy_init_skip_missing_config",
+                "代理已启用但缺少proxy_host或proxy_auth_code配置，跳过代理初始化",
+            )
             return
         
         if not HAS_AKSHARE_PROXY_PATCH:
-            print("⚠️ akshare-proxy-patch未安装，将使用直接连接方式")
-            print("   安装方法: pip install akshare-proxy-patch")
+            self._log(
+                "warning",
+                "proxy_patch_not_installed",
+                "akshare-proxy-patch未安装，将使用直接连接方式",
+                install_hint="pip install akshare-proxy-patch",
+            )
             return
         
         try:
@@ -200,10 +234,19 @@ class DataSource:
                 self.config.proxy_auth_code,
                 self.config.proxy_timeout
             )
-            print(f"✅ akshare代理补丁已启用: {self.config.proxy_host}")
+            self._log(
+                "info",
+                "proxy_patch_enabled",
+                f"akshare代理补丁已启用: {self.config.proxy_host}",
+                proxy_host=self.config.proxy_host,
+            )
         except Exception as e:
-            print(f"⚠️ akshare代理补丁初始化失败: {e}")
-            print("   将使用直接连接方式")
+            self._log(
+                "warning",
+                "proxy_patch_init_failed",
+                f"akshare代理补丁初始化失败: {e}",
+                error=str(e),
+            )
     
     def _resolve_tushare_token(self, token: Optional[str]) -> Optional[str]:
         """
@@ -362,7 +405,13 @@ class DataSource:
             return None
             
         except Exception as e:
-            print(f"efinance获取{code}数据失败: {e}")
+            self._log(
+                "warning",
+                "efinance_fetch_error",
+                f"efinance获取{code}数据失败: {e}",
+                code=code,
+                error=str(e),
+            )
             return None
     
     def _try_akshare_fallback(
@@ -387,7 +436,11 @@ class DataSource:
             历史数据DataFrame，失败返回None
         """
         if not HAS_AKSHARE:
-            print("⚠️ akshare未安装，无法使用备用数据源")
+            self._log(
+                "warning",
+                "akshare_not_installed",
+                "akshare未安装，无法使用备用数据源",
+            )
             return None
         
         try:
@@ -435,7 +488,13 @@ class DataSource:
             return None
             
         except Exception as e:
-            print(f"akshare备用数据源获取{code}数据失败: {e}")
+            self._log(
+                "warning",
+                "akshare_fallback_error",
+                f"akshare备用数据源获取{code}数据失败: {e}",
+                code=code,
+                error=str(e),
+            )
             return None
     
     def _to_tushare_code(self, code: str, data_type: str) -> str:
@@ -473,12 +532,20 @@ class DataSource:
         顺序中位于 efinance 之后、akshare 之前。
         """
         if not HAS_TUSHARE:
-            print("⚠️ tushare未安装，跳过tushare备用数据源")
+            self._log(
+                "warning",
+                "tushare_not_installed",
+                "tushare未安装，跳过tushare备用数据源",
+            )
             return None
         
         token = self._resolve_tushare_token(None)
         if not token:
-            print("⚠️ 未配置TUSHARE_TOKEN，跳过tushare备用数据源")
+            self._log(
+                "warning",
+                "tushare_token_missing",
+                "未配置TUSHARE_TOKEN，跳过tushare备用数据源",
+            )
             return None
         
         freq_map = {101: "D", 102: "W", 103: "M"}
@@ -498,7 +565,12 @@ class DataSource:
         try:
             ts.set_token(token)
         except Exception as e:
-            print(f"⚠️ tushare token初始化失败: {e}")
+            self._log(
+                "warning",
+                "tushare_token_init_failed",
+                f"tushare token初始化失败: {e}",
+                error=str(e),
+            )
             return None
         
         for asset in candidate_assets:
@@ -514,7 +586,9 @@ class DataSource:
                 if adj and asset in {"E", "FD"}:
                     call_kwargs["adj"] = adj
                 
-                df = ts.pro_bar(**call_kwargs)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=FutureWarning)
+                    df = ts.pro_bar(**call_kwargs)
                 if df is None or len(df) == 0:
                     continue
                 
@@ -535,7 +609,14 @@ class DataSource:
                 if len(df) > 0:
                     return df
             except Exception as e:
-                print(f"tushare备用数据源获取{code}数据失败(asset={asset}): {e}")
+                self._log(
+                    "warning",
+                    "tushare_fallback_asset_error",
+                    f"tushare备用数据源获取{code}数据失败(asset={asset}): {e}",
+                    code=code,
+                    asset=asset,
+                    error=str(e),
+                )
                 continue
         
         return None
@@ -609,25 +690,57 @@ class DataSource:
             return df
         
         if self.config.enable_fallback:
-            print(f"🔄 efinance获取失败，尝试tushare备用数据源: {code}")
+            self._log(
+                "info",
+                "history_fallback_to_tushare",
+                f"efinance获取失败，尝试tushare备用数据源: {code}",
+                code=code,
+                data_type=data_type,
+            )
             df = self._try_tushare_fallback(code, start_str, end_str, data_type, klt, fqt)
             
             if df is not None:
-                print(f"✅ 故障转移成功，使用tushare获取数据: {code}")
+                self._log(
+                    "info",
+                    "history_fallback_tushare_success",
+                    f"故障转移成功，使用tushare获取数据: {code}",
+                    code=code,
+                    data_type=data_type,
+                    rows=int(len(df)),
+                )
                 if use_cache:
                     self._save_cache(cache_key, df)
                 return df
             
-            print(f"🔄 tushare获取失败，尝试akshare备用数据源: {code}")
+            self._log(
+                "info",
+                "history_fallback_to_akshare",
+                f"tushare获取失败，尝试akshare备用数据源: {code}",
+                code=code,
+                data_type=data_type,
+            )
             df = self._try_akshare_fallback(code, start_str, end_str, klt, fqt)
             
             if df is not None:
-                print(f"✅ 故障转移成功，使用akshare获取数据: {code}")
+                self._log(
+                    "info",
+                    "history_fallback_akshare_success",
+                    f"故障转移成功，使用akshare获取数据: {code}",
+                    code=code,
+                    data_type=data_type,
+                    rows=int(len(df)),
+                )
                 if use_cache:
                     self._save_cache(cache_key, df)
                 return df
         
-        print(f"❌ 获取{code}历史数据失败，所有数据源均不可用")
+        self._log(
+            "error",
+            "history_fetch_all_sources_failed",
+            f"获取{code}历史数据失败，所有数据源均不可用",
+            code=code,
+            data_type=data_type,
+        )
         return None
     
     def get_etf_history(
@@ -731,7 +844,13 @@ class DataSource:
             return None
             
         except Exception as e:
-            print(f"获取{code}实时行情失败: {e}")
+            self._log(
+                "warning",
+                "realtime_quote_error",
+                f"获取{code}实时行情失败: {e}",
+                code=code,
+                error=str(e),
+            )
             return None
     
     def get_latest_price(self, code: str) -> float:
@@ -803,7 +922,15 @@ class DataSource:
         
         for i, code in enumerate(codes):
             if show_progress:
-                print(f"获取数据 [{i+1}/{total}]: {code}")
+                self._log(
+                    "info",
+                    "batch_history_progress",
+                    f"获取数据 [{i+1}/{total}]: {code}",
+                    index=i + 1,
+                    total=total,
+                    code=code,
+                    data_type=data_type,
+                )
             
             df = self.get_history(code, start_date, end_date, data_type)
             if df is not None:
@@ -867,6 +994,22 @@ class DataSource:
             "total_size_mb": self.get_cache_size() / (1024 * 1024),
             "expire_hours": self.config.cache_expire_hours,
         }
+
+    @staticmethod
+    def _to_tushare_index_code(index_code: str) -> str:
+        """
+        将本地指数代码转换为 tushare index_weight 所需的 index_code。
+        例:
+            000300 -> 000300.SH
+            000852 -> 000852.SH
+            399101 -> 399101.SZ
+        """
+        code = str(index_code).strip().upper()
+        if "." in code:
+            return code
+        if code.startswith("399"):
+            return f"{code}.SZ"
+        return f"{code}.SH"
     
     def get_index_components(
         self,
@@ -903,22 +1046,41 @@ class DataSource:
         
         resolved_tushare_token = self._resolve_tushare_token(tushare_token)
         
-        if date is not None and HAS_TUSHARE and resolved_tushare_token:
+        if HAS_TUSHARE and resolved_tushare_token:
             try:
                 pro = ts.pro_api(resolved_tushare_token)
-                ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
-                df = pro.index_weight(index_code=ts_code, start_date=date_str, end_date=date_str)
-                
+                ts_code = self._to_tushare_index_code(index_code)
+
+                if date is not None:
+                    start_str = date_str
+                    end_str = date_str
+                else:
+                    end_str = datetime.now().strftime("%Y%m%d")
+                    start_str = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+
+                df = pro.index_weight(index_code=ts_code, start_date=start_str, end_date=end_str)
+
                 if df is not None and len(df) > 0:
-                    codes = df['con_code'].str[:6].tolist()
+                    if "trade_date" in df.columns:
+                        latest_trade_date = df["trade_date"].max()
+                        df = df[df["trade_date"] == latest_trade_date]
+
+                    codes = df['con_code'].astype(str).str[:6].tolist()
                     codes = [str(c).zfill(6) for c in codes]
+                    codes = list(dict.fromkeys(codes))
                     
                     if use_cache:
                         self._save_cache(cache_key, pd.Series(codes))
                     
                     return codes
             except Exception as e:
-                print(f"tushare获取{index_code}历史成分股失败: {e}")
+                self._log(
+                    "warning",
+                    "index_components_tushare_error",
+                    f"tushare获取{index_code}成分股失败: {e}",
+                    index_code=index_code,
+                    error=str(e),
+                )
         
         if HAS_AKSHARE:
             try:
@@ -945,10 +1107,20 @@ class DataSource:
                 return codes
                 
             except Exception as e:
-                print(f"akshare获取{index_code}成分股失败: {e}")
+                self._log(
+                    "warning",
+                    "index_components_akshare_error",
+                    f"akshare获取{index_code}成分股失败: {e}",
+                    index_code=index_code,
+                    error=str(e),
+                )
         
         if not HAS_AKSHARE and not HAS_TUSHARE:
-            print("警告: akshare和tushare都未安装，请运行: pip install akshare 或 pip install tushare")
+            self._log(
+                "warning",
+                "index_components_all_sources_missing",
+                "警告: akshare和tushare都未安装，请运行: pip install akshare 或 pip install tushare",
+            )
         
         return None
     
@@ -991,9 +1163,15 @@ class DataSource:
         
         if HAS_TUSHARE and resolved_tushare_token:
             try:
-                print(f"使用tushare获取{index_code}历史成分股...")
+                self._log(
+                    "info",
+                    "index_components_history_tushare_start",
+                    f"使用tushare获取{index_code}历史成分股...",
+                    index_code=index_code,
+                    freq=freq,
+                )
                 pro = ts.pro_api(resolved_tushare_token)
-                ts_code = f"{index_code}.SH" if index_code.startswith('0') or index_code.startswith('3') else index_code
+                ts_code = self._to_tushare_index_code(index_code)
                 
                 start_str = start_date.strftime("%Y%m%d")
                 end_str = end_date.strftime("%Y%m%d")
@@ -1026,16 +1204,31 @@ class DataSource:
                         if use_cache:
                             self._save_cache(cache_key, pd.Series(codes))
                     
-                    print(f"  成功获取 {len(result)} 期历史成分股数据")
+                    self._log(
+                        "info",
+                        "index_components_history_tushare_success",
+                        f"成功获取 {len(result)} 期历史成分股数据",
+                        index_code=index_code,
+                        periods=len(result),
+                    )
                     return result
                     
             except Exception as e:
-                print(f"tushare获取历史成分股失败: {e}")
+                self._log(
+                    "warning",
+                    "index_components_history_tushare_error",
+                    f"tushare获取历史成分股失败: {e}",
+                    index_code=index_code,
+                    error=str(e),
+                )
         
-        print("警告: 未配置tushare token，无法获取历史成分股")
-        print("  可在项目根目录 .env 中配置: TUSHARE_TOKEN=你的token")
-        print("  请注册tushare账号并获取token: https://tushare.pro/")
-        print("  回测将使用当前成分股，可能存在前视偏差")
+        self._log(
+            "warning",
+            "index_components_history_token_missing",
+            "未配置tushare token，无法获取历史成分股；回测将使用当前成分股，可能存在前视偏差",
+            config_hint="TUSHARE_TOKEN=你的token",
+            token_url="https://tushare.pro/",
+        )
         
         current_components = self.get_index_components(index_code, None, use_cache, resolved_tushare_token)
         if current_components:

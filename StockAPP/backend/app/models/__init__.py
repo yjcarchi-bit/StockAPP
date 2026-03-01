@@ -25,6 +25,10 @@ from .responses import (
     StockInfo,
     StrategyInfo,
     StrategyListItem,
+    MacroAPIInfo,
+    MacroDataResponse,
+    FinancialAPIInfo,
+    FinancialDataResponse,
     APIResponse,
     ErrorResponse,
 )
@@ -49,6 +53,10 @@ __all__ = [
     "StockInfo",
     "StrategyInfo",
     "StrategyListItem",
+    "MacroAPIInfo",
+    "MacroDataResponse",
+    "FinancialAPIInfo",
+    "FinancialDataResponse",
     "APIResponse",
     "ErrorResponse",
 ]

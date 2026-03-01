@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from .models import DailyBar, IndexComponent, Instrument, SyncCheckpoint, SyncJob
+from .models import DailyBar, FinancialObservation, IndexComponent, Instrument, MacroObservation, SyncCheckpoint, SyncJob
 from .session import session_scope
 
 
@@ -22,8 +24,45 @@ def _to_date(value: Any) -> Optional[date]:
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, str):
-        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            try:
+                return datetime.strptime(text[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if len(digits) >= 8:
+            try:
+                return datetime.strptime(digits[:8], "%Y%m%d").date()
+            except ValueError:
+                return None
     return None
+
+
+def _to_month(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().replace("-", "").replace("/", "")
+    if len(text) != 6 or not text.isdigit():
+        return None
+    try:
+        datetime.strptime(f"{text}01", "%Y%m%d")
+    except ValueError:
+        return None
+    return text
+
+
+def _to_quarter(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().upper().replace(" ", "")
+    if len(text) != 6 or text[4] != "Q" or text[5] not in {"1", "2", "3", "4"}:
+        return None
+    if not text[:4].isdigit():
+        return None
+    return text
 
 
 def infer_market(code: str) -> str:
@@ -44,6 +83,8 @@ def normalize_security_type(security_type: str) -> str:
 
 class MarketDataRepository:
     """Encapsulates all SQL writes/reads for market data."""
+
+    UPSERT_BATCH_SIZE = 500
 
     def _upsert_instrument(
         self,
@@ -293,6 +334,7 @@ class MarketDataRepository:
         period: str = "1d",
         adjust_type: str = "qfq",
         source: str = "unknown",
+        progress_cb: Optional[Callable[[int, int], None]] = None,
     ) -> int:
         if not bars:
             return 0
@@ -335,24 +377,36 @@ class MarketDataRepository:
         if not values:
             return 0
 
+        total = len(values)
+        if progress_cb:
+            progress_cb(0, total)
+
+        affected_total = 0
         with session_scope() as session:
-            stmt = mysql_insert(DailyBar).values(values)
-            stmt = stmt.on_duplicate_key_update(
-                open=stmt.inserted.open,
-                high=stmt.inserted.high,
-                low=stmt.inserted.low,
-                close=stmt.inserted.close,
-                volume=stmt.inserted.volume,
-                amount=stmt.inserted.amount,
-                amplitude=stmt.inserted.amplitude,
-                pct_change=stmt.inserted.pct_change,
-                change_amount=stmt.inserted.change_amount,
-                turnover=stmt.inserted.turnover,
-                source=stmt.inserted.source,
-                ingested_at=stmt.inserted.ingested_at,
-            )
-            result = session.execute(stmt)
-            return int(result.rowcount or 0)
+            for offset in range(0, total, self.UPSERT_BATCH_SIZE):
+                chunk = values[offset : offset + self.UPSERT_BATCH_SIZE]
+                stmt = mysql_insert(DailyBar).values(chunk)
+                stmt = stmt.on_duplicate_key_update(
+                    open=stmt.inserted.open,
+                    high=stmt.inserted.high,
+                    low=stmt.inserted.low,
+                    close=stmt.inserted.close,
+                    volume=stmt.inserted.volume,
+                    amount=stmt.inserted.amount,
+                    amplitude=stmt.inserted.amplitude,
+                    pct_change=stmt.inserted.pct_change,
+                    change_amount=stmt.inserted.change_amount,
+                    turnover=stmt.inserted.turnover,
+                    source=stmt.inserted.source,
+                    ingested_at=stmt.inserted.ingested_at,
+                )
+                result = session.execute(stmt)
+                affected_total += int(result.rowcount or 0)
+
+                if progress_cb:
+                    progress_cb(min(offset + len(chunk), total), total)
+
+        return affected_total
 
     def search_stocks(self, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
         kw = (keyword or "").strip()
@@ -386,6 +440,409 @@ class MarketDataRepository:
                 for row in rows
             ]
 
+    def upsert_macro_observations(
+        self,
+        api_name: str,
+        observations: Sequence[Dict[str, Any]],
+        source: str = "tushare_macro",
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ) -> int:
+        """批量写入宏观观测数据（幂等 upsert）。
+
+        唯一键：
+        - (api_name, period_key, dimension_key)
+
+        设计说明：
+        - `period_key`：统一的时间主键（YYYYMMDD / YYYYMM / YYYYQn）
+        - `dimension_key`：同一时间下的维度区分（银行/国家/事件等）
+        """
+        if not observations:
+            return 0
+
+        api = (api_name or "").strip().lower()
+        if not api:
+            return 0
+
+        values: List[Dict[str, Any]] = []
+        for row in observations:
+            if not isinstance(row, dict):
+                continue
+            period_key, dimension_key, obs_date, obs_month, obs_quarter = self._macro_keys(row)
+            payload = self._json_safe(row)
+            if not isinstance(payload, dict):
+                continue
+            values.append(
+                {
+                    "api_name": api,
+                    "period_key": period_key,
+                    "dimension_key": dimension_key,
+                    "obs_date": obs_date,
+                    "obs_month": obs_month,
+                    "obs_quarter": obs_quarter,
+                    "payload_json": payload,
+                    "source": source,
+                    "ingested_at": datetime.now(),
+                }
+            )
+
+        if not values:
+            return 0
+
+        total = len(values)
+        if progress_cb:
+            progress_cb(0, total)
+
+        affected_total = 0
+        with session_scope() as session:
+            for offset in range(0, total, self.UPSERT_BATCH_SIZE):
+                chunk = values[offset : offset + self.UPSERT_BATCH_SIZE]
+                stmt = mysql_insert(MacroObservation).values(chunk)
+                stmt = stmt.on_duplicate_key_update(
+                    obs_date=stmt.inserted.obs_date,
+                    obs_month=stmt.inserted.obs_month,
+                    obs_quarter=stmt.inserted.obs_quarter,
+                    payload_json=stmt.inserted.payload_json,
+                    source=stmt.inserted.source,
+                    ingested_at=stmt.inserted.ingested_at,
+                )
+                result = session.execute(stmt)
+                affected_total += int(result.rowcount or 0)
+
+                if progress_cb:
+                    progress_cb(min(offset + len(chunk), total), total)
+
+        return affected_total
+
+    def get_macro_observations(
+        self,
+        api_name: str,
+        start_key: Optional[str] = None,
+        end_key: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """按接口与时间窗口读取宏观缓存记录。"""
+        api = (api_name or "").strip().lower()
+        if not api:
+            return []
+
+        with session_scope() as session:
+            stmt = select(MacroObservation).where(MacroObservation.api_name == api)
+            if start_key:
+                stmt = stmt.where(MacroObservation.period_key >= str(start_key))
+            if end_key:
+                stmt = stmt.where(MacroObservation.period_key <= str(end_key))
+            rows = session.execute(
+                stmt.order_by(MacroObservation.period_key.desc(), MacroObservation.dimension_key.asc()).limit(max(limit, 1))
+            ).scalars().all()
+
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                result.append(
+                    {
+                        "api_name": row.api_name,
+                        "period_key": row.period_key,
+                        "dimension_key": row.dimension_key,
+                        "obs_date": row.obs_date.isoformat() if row.obs_date else None,
+                        "obs_month": row.obs_month,
+                        "obs_quarter": row.obs_quarter,
+                        "payload_json": row.payload_json or {},
+                        "source": row.source,
+                        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
+                    }
+                )
+            return result
+
+    def get_macro_observation_keys(
+        self,
+        api_name: str,
+        start_key: Optional[str] = None,
+        end_key: Optional[str] = None,
+        limit: int = 200000,
+    ) -> List[str]:
+        """读取宏观缓存唯一键（period_key + dimension_key），用于统计本地已有量。"""
+        api = (api_name or "").strip().lower()
+        if not api:
+            return []
+
+        with session_scope() as session:
+            stmt = select(MacroObservation.period_key, MacroObservation.dimension_key).where(MacroObservation.api_name == api)
+            if start_key:
+                stmt = stmt.where(MacroObservation.period_key >= str(start_key))
+            if end_key:
+                stmt = stmt.where(MacroObservation.period_key <= str(end_key))
+
+            rows = session.execute(stmt.limit(max(limit, 1))).all()
+            return [f"{row[0]}|{row[1]}" for row in rows]
+
+    def upsert_financial_observations(
+        self,
+        api_name: str,
+        ts_code: str,
+        observations: Sequence[Dict[str, Any]],
+        source: str = "tushare_financial",
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ) -> int:
+        """批量写入财务数据（幂等 upsert）。"""
+        if not observations:
+            return 0
+
+        api = (api_name or "").strip().lower()
+        code = (ts_code or "").strip().upper()
+        if not api or not code:
+            return 0
+
+        values: List[Dict[str, Any]] = []
+        for row in observations:
+            if not isinstance(row, dict):
+                continue
+            period_key, dimension_key, ann_date, end_date = self._financial_keys(row, code)
+            payload = self._json_safe(row)
+            if not isinstance(payload, dict):
+                continue
+            values.append(
+                {
+                    "api_name": api,
+                    "ts_code": code,
+                    "period_key": period_key,
+                    "dimension_key": dimension_key,
+                    "ann_date": ann_date,
+                    "end_date": end_date,
+                    "payload_json": payload,
+                    "source": source,
+                    "ingested_at": datetime.now(),
+                }
+            )
+
+        if not values:
+            return 0
+
+        total = len(values)
+        if progress_cb:
+            progress_cb(0, total)
+
+        affected_total = 0
+        with session_scope() as session:
+            for offset in range(0, total, self.UPSERT_BATCH_SIZE):
+                chunk = values[offset : offset + self.UPSERT_BATCH_SIZE]
+                stmt = mysql_insert(FinancialObservation).values(chunk)
+                stmt = stmt.on_duplicate_key_update(
+                    ann_date=stmt.inserted.ann_date,
+                    end_date=stmt.inserted.end_date,
+                    payload_json=stmt.inserted.payload_json,
+                    source=stmt.inserted.source,
+                    ingested_at=stmt.inserted.ingested_at,
+                )
+                result = session.execute(stmt)
+                affected_total += int(result.rowcount or 0)
+
+                if progress_cb:
+                    progress_cb(min(offset + len(chunk), total), total)
+
+        return affected_total
+
+    def get_financial_observations(
+        self,
+        api_name: str,
+        ts_code: str,
+        start_key: Optional[str] = None,
+        end_key: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """按接口、证券和时间窗口读取财务缓存数据。"""
+        api = (api_name or "").strip().lower()
+        code = (ts_code or "").strip().upper()
+        if not api or not code:
+            return []
+
+        with session_scope() as session:
+            stmt = select(FinancialObservation).where(
+                and_(
+                    FinancialObservation.api_name == api,
+                    FinancialObservation.ts_code == code,
+                )
+            )
+            if start_key:
+                stmt = stmt.where(FinancialObservation.period_key >= str(start_key))
+            if end_key:
+                stmt = stmt.where(FinancialObservation.period_key <= str(end_key))
+
+            rows = session.execute(
+                stmt.order_by(FinancialObservation.period_key.desc(), FinancialObservation.dimension_key.asc()).limit(
+                    max(limit, 1)
+                )
+            ).scalars().all()
+
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                result.append(
+                    {
+                        "api_name": row.api_name,
+                        "ts_code": row.ts_code,
+                        "period_key": row.period_key,
+                        "dimension_key": row.dimension_key,
+                        "ann_date": row.ann_date.isoformat() if row.ann_date else None,
+                        "end_date": row.end_date.isoformat() if row.end_date else None,
+                        "payload_json": row.payload_json or {},
+                        "source": row.source,
+                        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
+                    }
+                )
+            return result
+
+    def get_financial_observation_keys(
+        self,
+        api_name: str,
+        ts_code: str,
+        start_key: Optional[str] = None,
+        end_key: Optional[str] = None,
+        limit: int = 200000,
+    ) -> List[str]:
+        """读取财务缓存唯一键（period_key + dimension_key），用于统计本地已有量。"""
+        api = (api_name or "").strip().lower()
+        code = (ts_code or "").strip().upper()
+        if not api or not code:
+            return []
+
+        with session_scope() as session:
+            stmt = select(FinancialObservation.period_key, FinancialObservation.dimension_key).where(
+                and_(
+                    FinancialObservation.api_name == api,
+                    FinancialObservation.ts_code == code,
+                )
+            )
+            if start_key:
+                stmt = stmt.where(FinancialObservation.period_key >= str(start_key))
+            if end_key:
+                stmt = stmt.where(FinancialObservation.period_key <= str(end_key))
+
+            rows = session.execute(stmt.limit(max(limit, 1))).all()
+            return [f"{row[0]}|{row[1]}" for row in rows]
+
+    @classmethod
+    def macro_observation_identity(cls, row: Dict[str, Any]) -> str:
+        """将宏观原始行映射为唯一键字符串（period_key|dimension_key）。"""
+        period_key, dimension_key, _, _, _ = cls._macro_keys(row)
+        return f"{period_key}|{dimension_key}"
+
+    @classmethod
+    def financial_observation_identity(cls, row: Dict[str, Any], ts_code: str) -> str:
+        """将财务原始行映射为唯一键字符串（period_key|dimension_key）。"""
+        period_key, dimension_key, _, _ = cls._financial_keys(row, ts_code)
+        return f"{period_key}|{dimension_key}"
+
+    @staticmethod
+    def _financial_keys(row: Dict[str, Any], ts_code: str) -> tuple[str, str, Optional[date], Optional[date]]:
+        """从财务原始记录中提取主键字段。"""
+        ann_date = None
+        for key in ("ann_date", "f_ann_date", "actual_date"):
+            ann_date = _to_date(row.get(key))
+            if ann_date is not None:
+                break
+
+        end_date = None
+        for key in ("end_date", "period", "report_date"):
+            end_date = _to_date(row.get(key))
+            if end_date is not None:
+                break
+
+        if end_date is not None:
+            period_key = end_date.strftime("%Y%m%d")
+        elif ann_date is not None:
+            period_key = ann_date.strftime("%Y%m%d")
+        else:
+            payload_fingerprint = hashlib.md5(str(sorted(row.items())).encode("utf-8")).hexdigest()
+            period_key = f"row_{payload_fingerprint[:24]}"
+
+        dimension_parts = [f"ts_code={ts_code}"]
+        for key in ("report_type", "bz_item", "bz_code", "type", "div_proc", "ann_date", "f_ann_date"):
+            raw = row.get(key)
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            dimension_parts.append(f"{key}={text}")
+        dimension_key = "|".join(dimension_parts)[:191]
+        return period_key, dimension_key, ann_date, end_date
+
+    @staticmethod
+    def _macro_keys(row: Dict[str, Any]) -> tuple[str, str, Optional[date], Optional[str], Optional[str]]:
+        """从原始行推导落库主键字段。
+
+        返回：
+        - period_key: 时间主键（优先 date > month > quarter）
+        - dimension_key: 维度主键（bank/currency/country/event/time/curr_type）
+        - obs_date / obs_month / obs_quarter: 结构化时间字段
+        """
+        obs_date = None
+        for key in ("date", "trade_date", "ann_date", "cal_date"):
+            obs_date = _to_date(row.get(key))
+            if obs_date is not None:
+                break
+
+        obs_month = None
+        for key in ("month", "MONTH", "m"):
+            obs_month = _to_month(row.get(key))
+            if obs_month:
+                break
+
+        obs_quarter = None
+        for key in ("quarter", "QUARTER", "q"):
+            obs_quarter = _to_quarter(row.get(key))
+            if obs_quarter:
+                break
+
+        if obs_date is not None:
+            period_key = obs_date.strftime("%Y%m%d")
+        elif obs_month:
+            period_key = obs_month
+        elif obs_quarter:
+            period_key = obs_quarter
+        else:
+            # 对无法识别时间字段的数据，退化为内容哈希，保证幂等。
+            payload_fingerprint = hashlib.md5(str(sorted(row.items())).encode("utf-8")).hexdigest()
+            period_key = f"row_{payload_fingerprint[:24]}"
+
+        dimension_parts: List[str] = []
+        for key in ("bank", "currency", "country", "event", "time", "curr_type"):
+            raw = row.get(key)
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            dimension_parts.append(f"{key}={text}")
+        dimension_key = "|".join(dimension_parts)[:191]
+        return period_key, dimension_key, obs_date, obs_month, obs_quarter
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        """将任意 Python 值转换为可写入 JSON 字段的安全值。"""
+        if value is None:
+            return None
+        if isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return value
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): MarketDataRepository._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [MarketDataRepository._json_safe(v) for v in value]
+        if hasattr(value, "item"):
+            try:
+                return MarketDataRepository._json_safe(value.item())
+            except Exception:
+                pass
+        return str(value)
+
     def start_sync_job(self, job_type: str, payload: Optional[Dict[str, Any]] = None) -> str:
         job_id = uuid.uuid4().hex
         with session_scope() as session:
@@ -418,6 +875,61 @@ class MarketDataRepository:
                     error_text=error_text,
                 )
             )
+
+    def update_sync_job_progress(
+        self,
+        job_id: str,
+        stats: Optional[Dict[str, Any]] = None,
+        status: str = "running",
+    ) -> None:
+        with session_scope() as session:
+            session.execute(
+                SyncJob.__table__.update()
+                .where(SyncJob.job_id == job_id)
+                .values(
+                    status=status,
+                    stats_json=stats or {},
+                )
+            )
+
+    def get_sync_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with session_scope() as session:
+            row = session.execute(
+                select(SyncJob).where(SyncJob.job_id == job_id)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "job_id": row.job_id,
+                "job_type": row.job_type,
+                "status": row.status,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+                "payload_json": row.payload_json or {},
+                "stats_json": row.stats_json or {},
+                "error_text": row.error_text,
+            }
+
+    def get_latest_sync_job(self, job_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        with session_scope() as session:
+            stmt = select(SyncJob)
+            if job_type:
+                stmt = stmt.where(SyncJob.job_type == job_type)
+            row = session.execute(
+                stmt.order_by(SyncJob.started_at.desc()).limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "job_id": row.job_id,
+                "job_type": row.job_type,
+                "status": row.status,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+                "payload_json": row.payload_json or {},
+                "stats_json": row.stats_json or {},
+                "error_text": row.error_text,
+            }
 
     def get_last_success_sync_time(self) -> Optional[str]:
         with session_scope() as session:

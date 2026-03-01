@@ -143,6 +143,59 @@ class StrategyListItem(BaseModel):
     params: List[Dict[str, Any]]
 
 
+class MacroAPIInfo(BaseModel):
+    """宏观接口信息"""
+
+    api_name: str = Field(..., description="接口名（用于请求 /api/macro/{api_name}）")
+    name_zh: str = Field(..., description="接口中文名称")
+    granularity: str = Field(..., description="时间粒度：date | month | quarter")
+    default_start: str = Field(..., description="默认起始时间（随粒度变化）")
+    default_end: str = Field(..., description="默认结束时间（随粒度变化）")
+
+
+class MacroDataResponse(BaseModel):
+    """宏观接口查询结果"""
+
+    api_name: str = Field(..., description="接口名")
+    name_zh: str = Field(..., description="接口中文名称")
+    granularity: str = Field(..., description="时间粒度：date | month | quarter")
+    params: Dict[str, str] = Field(default_factory=dict, description="实际生效的查询参数")
+    range_start: str = Field(..., description="标准化后的起始 key")
+    range_end: str = Field(..., description="标准化后的结束 key")
+    source: str = Field(..., description="数据来源：tushare 或 mysql_cache")
+    fetched_count: int = Field(0, description="本次从 Tushare 拉取条数")
+    stored_count: int = Field(0, description="本次写入 MySQL 的条数")
+    returned_count: int = Field(0, description="本次接口返回条数")
+    data: List[Dict[str, Any]] = Field(default_factory=list, description="数据明细（行字典）")
+
+
+class FinancialAPIInfo(BaseModel):
+    """财务接口信息"""
+
+    api_name: str = Field(..., description="接口名（用于请求 /api/financial/{api_name}）")
+    name_zh: str = Field(..., description="接口中文名称")
+    mode: str = Field(..., description="参数模式：standard_range/disclosure_range/period_only/dividend")
+    default_start: str = Field(..., description="默认起始时间（YYYYMMDD）")
+    default_end: str = Field(..., description="默认结束时间（YYYYMMDD）")
+
+
+class FinancialDataResponse(BaseModel):
+    """财务接口查询结果"""
+
+    api_name: str = Field(..., description="接口名")
+    name_zh: str = Field(..., description="接口中文名称")
+    mode: str = Field(..., description="参数模式")
+    ts_code: str = Field(..., description="查询证券代码")
+    params: Dict[str, str] = Field(default_factory=dict, description="实际生效的查询参数")
+    range_start: str = Field(..., description="标准化后的起始 key")
+    range_end: str = Field(..., description="标准化后的结束 key")
+    source: str = Field(..., description="数据来源：tushare 或 mysql_cache")
+    fetched_count: int = Field(0, description="本次从 Tushare 拉取条数")
+    stored_count: int = Field(0, description="本次写入 MySQL 的条数")
+    returned_count: int = Field(0, description="本次接口返回条数")
+    data: List[Dict[str, Any]] = Field(default_factory=list, description="数据明细（行字典）")
+
+
 class APIResponse(BaseModel):
     """通用API响应"""
     success: bool = True
