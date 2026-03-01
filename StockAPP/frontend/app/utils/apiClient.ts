@@ -136,6 +136,10 @@ export interface CacheInfo {
   file_count: number;
   total_size_mb: number;
   expire_hours?: number;
+  storage_backend?: string;
+  symbol_count?: number;
+  row_count?: number;
+  last_sync_at?: string | null;
 }
 
 export interface ETFDataResponse {
@@ -196,6 +200,12 @@ export const apiClient = {
 
   triggerUpdate() {
     return request<ApiResponse>('/data-update/trigger', {
+      method: 'POST',
+    });
+  },
+
+  triggerPklMigration() {
+    return request<ApiResponse>('/data-update/migrate-pkl', {
       method: 'POST',
     });
   },

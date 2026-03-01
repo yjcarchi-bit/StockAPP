@@ -217,7 +217,7 @@ cd /d "%APP_DIR%\backend"
 
 set MISSING_DEPS=
 
-for %%d in (fastapi uvicorn pydantic pandas numpy efinance apscheduler) do (
+for %%d in (fastapi uvicorn pydantic pandas numpy efinance apscheduler sqlalchemy pymysql) do (
     %PYTHON_CMD% -c "import %%d" >nul 2>&1
     if !errorlevel! neq 0 (
         if "!MISSING_DEPS!"=="" (

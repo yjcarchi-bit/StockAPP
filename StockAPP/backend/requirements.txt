@@ -2,6 +2,9 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.5.3
 python-multipart==0.0.6
+SQLAlchemy>=2.0.25
+alembic>=1.13.0
+PyMySQL>=1.1.0
 
 efinance>=0.5.5
 pandas>=2.0.0
