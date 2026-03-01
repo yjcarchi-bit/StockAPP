@@ -438,6 +438,108 @@ class DataSource:
             print(f"akshare备用数据源获取{code}数据失败: {e}")
             return None
     
+    def _to_tushare_code(self, code: str, data_type: str) -> str:
+        """将本地代码格式转换为 tushare ts_code"""
+        raw = code.strip()
+        if "." in raw:
+            left, right = raw.split(".", 1)
+            if right.upper() in {"SH", "SZ"}:
+                return f"{left}.{right.upper()}"
+            raw = left
+        
+        if raw.lower().startswith(("sh", "sz")) and len(raw) > 2:
+            market_prefix = raw[:2].upper()
+            return f"{raw[2:]}.{market_prefix}"
+        
+        if data_type == self.INDEX_TYPE:
+            market = "SZ" if raw.startswith("399") else "SH"
+            return f"{raw}.{market}"
+        
+        market = "SH" if raw.startswith(("5", "6", "9")) else "SZ"
+        return f"{raw}.{market}"
+    
+    def _try_tushare_fallback(
+        self,
+        code: str,
+        start_str: str,
+        end_str: str,
+        data_type: str,
+        klt: int,
+        fqt: int
+    ) -> Optional[pd.DataFrame]:
+        """
+        尝试使用 tushare 作为第二备用数据源
+        
+        顺序中位于 efinance 之后、akshare 之前。
+        """
+        if not HAS_TUSHARE:
+            print("⚠️ tushare未安装，跳过tushare备用数据源")
+            return None
+        
+        token = self._resolve_tushare_token(None)
+        if not token:
+            print("⚠️ 未配置TUSHARE_TOKEN，跳过tushare备用数据源")
+            return None
+        
+        freq_map = {101: "D", 102: "W", 103: "M"}
+        freq = freq_map.get(klt, "D")
+        adj_map = {0: None, 1: "qfq", 2: "hfq"}
+        adj = adj_map.get(fqt)
+        
+        ts_code = self._to_tushare_code(code, data_type)
+        
+        if data_type == self.INDEX_TYPE:
+            candidate_assets = ["I", "E"]
+        elif data_type in {self.ETF_TYPE, self.FUND_TYPE}:
+            candidate_assets = ["FD", "E"]
+        else:
+            candidate_assets = ["E"]
+        
+        try:
+            ts.set_token(token)
+        except Exception as e:
+            print(f"⚠️ tushare token初始化失败: {e}")
+            return None
+        
+        for asset in candidate_assets:
+            try:
+                self._rate_limit()
+                call_kwargs = {
+                    "ts_code": ts_code,
+                    "start_date": start_str,
+                    "end_date": end_str,
+                    "freq": freq,
+                    "asset": asset,
+                }
+                if adj and asset in {"E", "FD"}:
+                    call_kwargs["adj"] = adj
+                
+                df = ts.pro_bar(**call_kwargs)
+                if df is None or len(df) == 0:
+                    continue
+                
+                df = df.rename(
+                    columns={
+                        "trade_date": "date",
+                        "vol": "volume",
+                        "pct_chg": "pct_change",
+                    }
+                )
+                
+                if "date" not in df.columns:
+                    continue
+                
+                df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+                df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+                
+                if len(df) > 0:
+                    return df
+            except Exception as e:
+                print(f"tushare备用数据源获取{code}数据失败(asset={asset}): {e}")
+                continue
+        
+        return None
+    
     def _get_market_code(self, code: str) -> str:
         """
         获取市场代码
@@ -472,7 +574,10 @@ class DataSource:
         """
         获取历史数据（通用接口）
         
-        支持故障转移机制：当efinance获取失败时，自动尝试akshare备用数据源。
+        支持故障转移机制，数据源顺序：
+        1) efinance
+        2) tushare
+        3) akshare（若启用了代理补丁则通过代理）
         
         Args:
             code: 证券代码
@@ -504,7 +609,16 @@ class DataSource:
             return df
         
         if self.config.enable_fallback:
-            print(f"🔄 efinance获取失败，尝试akshare备用数据源: {code}")
+            print(f"🔄 efinance获取失败，尝试tushare备用数据源: {code}")
+            df = self._try_tushare_fallback(code, start_str, end_str, data_type, klt, fqt)
+            
+            if df is not None:
+                print(f"✅ 故障转移成功，使用tushare获取数据: {code}")
+                if use_cache:
+                    self._save_cache(cache_key, df)
+                return df
+            
+            print(f"🔄 tushare获取失败，尝试akshare备用数据源: {code}")
             df = self._try_akshare_fallback(code, start_str, end_str, klt, fqt)
             
             if df is not None:
